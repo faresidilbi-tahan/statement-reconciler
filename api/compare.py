@@ -24,6 +24,13 @@ TOLERANCE = 0.01
 # matched. Set to False to require same-side matches only.
 MIRROR_OK = True
 
+# When the two statements cover different periods (e.g. our May statement vs
+# the supplier's Jan-to-date statement), unmatched rows dated outside the
+# overlapping period are noise, not discrepancies. Matching by id still runs
+# across the full range; only unmatched leftovers outside the overlap are
+# suppressed (and counted in the summary). Set to False to report everything.
+OVERLAP_ONLY = True
+
 
 def norm_id(v):
     s = re.sub(r"\s+", "", str(v or "")).lower()
@@ -133,6 +140,29 @@ def compare(ours_raw, supplier_raw):
             still.append(i)
     o_unmatched = still
 
+    # overlap window between the two statements' transaction date ranges
+    def date_range(rows):
+        ds = [r["date"] for r in rows if r["date"]]
+        return (min(ds), max(ds)) if ds else None
+
+    window = None
+    if OVERLAP_ONLY:
+        o_range, s_range = date_range(ours), date_range(supplier)
+        if o_range and s_range:
+            lo, hi = max(o_range[0], s_range[0]), min(o_range[1], s_range[1])
+            if lo <= hi:
+                window = (lo, hi)
+
+    def in_window(r):
+        if window is None or not r["date"]:
+            return True
+        return window[0] <= r["date"] <= window[1]
+
+    ignored_ours = [i for i in o_unmatched if not in_window(ours[i])]
+    ignored_supplier = [j for j in s_unmatched if not in_window(supplier[j])]
+    o_unmatched = [i for i in o_unmatched if in_window(ours[i])]
+    s_unmatched = [j for j in s_unmatched if in_window(supplier[j])]
+
     issues = []
     mismatches = 0
     for i, j in matched_pairs:
@@ -155,6 +185,9 @@ def compare(ours_raw, supplier_raw):
             "value_mismatch": mismatches,
             "missing_in_supplier": len(o_unmatched),
             "missing_in_tahan": len(s_unmatched),
+            "ignored_out_of_range_ours": len(ignored_ours),
+            "ignored_out_of_range_supplier": len(ignored_supplier),
+            "compared_window": list(window) if window else None,
         },
         "issues": issues,
     }
