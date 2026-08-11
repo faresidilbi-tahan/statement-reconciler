@@ -251,11 +251,7 @@
       s.value_mismatch + ' mismatch' + (s.value_mismatch === 1 ? '' : 'es') +
       '</strong> out of ' + s.our_transactions + ' of our transactions (' +
       s.supplier_transactions + ' on the supplier side, ' + s.matched + ' matched cleanly).' +
-      ((s.ignored_out_of_range_ours || s.ignored_out_of_range_supplier) ?
-        ' ' + ((s.ignored_out_of_range_ours || 0) + (s.ignored_out_of_range_supplier || 0)) +
-        ' unmatched rows dated outside the overlapping period' +
-        (s.compared_window ? ' (' + s.compared_window[0] + ' to ' + s.compared_window[1] + ')' : '') +
-        ' were not compared.' : '');
+      (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '');
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -274,9 +270,11 @@
 
     issues.forEach(function (row) {
       var tr = document.createElement('tr');
+      var outOfRange = row.out_of_our_range ?
+        ' <span title="Dated outside our statement\'s own date range" style="color:#b26a00;font-weight:600;">(other period)</span>' : '';
       tr.innerHTML =
         '<td><span class="badge ' + esc(row.issue) + '">' + (LABELS[row.issue] || esc(row.issue)) + '</span></td>' +
-        '<td>' + esc(row.date) + '</td>' +
+        '<td>' + esc(row.date) + outOfRange + '</td>' +
         '<td>' + esc(row.id) + '</td>' +
         '<td class="desc">' + esc(row.description) + '</td>' +
         '<td class="num">' + fmt(row.our_debit) + '</td>' +
