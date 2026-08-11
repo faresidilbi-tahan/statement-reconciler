@@ -250,7 +250,12 @@
       s.missing_in_tahan + ' missing in ours, ' +
       s.value_mismatch + ' mismatch' + (s.value_mismatch === 1 ? '' : 'es') +
       '</strong> out of ' + s.our_transactions + ' of our transactions (' +
-      s.supplier_transactions + ' on the supplier side, ' + s.matched + ' matched cleanly).';
+      s.supplier_transactions + ' on the supplier side, ' + s.matched + ' matched cleanly).' +
+      ((s.ignored_out_of_range_ours || s.ignored_out_of_range_supplier) ?
+        ' ' + ((s.ignored_out_of_range_ours || 0) + (s.ignored_out_of_range_supplier || 0)) +
+        ' unmatched rows dated outside the overlapping period' +
+        (s.compared_window ? ' (' + s.compared_window[0] + ' to ' + s.compared_window[1] + ')' : '') +
+        ' were not compared.' : '');
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
