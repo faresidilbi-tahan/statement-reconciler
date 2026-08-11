@@ -151,12 +151,23 @@ def compare(ours_raw, supplier_raw):
         return not (our_range[0] <= r["date"] <= our_range[1])
 
     issues = []
+    matched_rows = []
     mismatches = 0
     for i, j in matched_pairs:
-        if not values_match(ours[i], supplier[j]):
+        o, s = ours[i], supplier[j]
+        if values_match(o, s):
+            matched_rows.append({
+                "date": o["date"],
+                "id": o["id"] or s["id"],
+                "description": o["description"],
+                "our_debit": o["debit"],
+                "our_credit": o["credit"],
+                "supplier_debit": s["debit"],
+                "supplier_credit": s["credit"],
+            })
+        else:
             mismatches += 1
-            row = issue("value_mismatch", ours[i], supplier[j])
-            issues.append(row)
+            issues.append(issue("value_mismatch", o, s))
     for i in o_unmatched:
         issues.append(issue("missing_in_supplier", o=ours[i]))
     for j in s_unmatched:
@@ -165,18 +176,20 @@ def compare(ours_raw, supplier_raw):
         issues.append(row)
 
     issues.sort(key=lambda r: (r["date"], r["id"]))
+    matched_rows.sort(key=lambda r: (r["date"], r["id"]))
 
     return {
         "summary": {
             "our_transactions": len(ours),
             "supplier_transactions": len(supplier),
-            "matched": len(matched_pairs) - mismatches,
+            "matched": len(matched_rows),
             "value_mismatch": mismatches,
             "missing_in_supplier": len(o_unmatched),
             "missing_in_tahan": len(s_unmatched),
             "our_date_range": list(our_range) if our_range else None,
         },
         "issues": issues,
+        "matched": matched_rows,
     }
 
 
