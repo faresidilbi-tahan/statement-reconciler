@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Statement Reconciliation — Abed Tahan</title>
+<style>
+  :root {
+    --blue: #1565C0;
+    --blue-dark: #0D47A1;
+    --yellow: #FFD600;
+    --ink: #1a2330;
+    --muted: #66707d;
+    --line: #dde3ea;
+    --bg: #f4f6f9;
+    --red: #c62828;
+    --amber: #b26a00;
+    --green: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    background: var(--blue);
+    border-bottom: 4px solid var(--yellow);
+    color: #fff;
+    padding: 18px 24px;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
+
+  .uploads { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .uploads { grid-template-columns: 1fr; } }
+
+  .drop {
+    background: #fff;
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    padding: 26px 18px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.dragover { border-color: var(--blue); background: #eef4fc; }
+  .drop.loaded { border-style: solid; border-color: var(--blue); }
+  .drop h2 { margin: 0 0 4px; font-size: 15px; }
+  .drop .hint { font-size: 12.5px; color: var(--muted); margin: 0; }
+  .drop .filename { font-size: 13px; color: var(--blue-dark); font-weight: 600; margin-top: 8px; word-break: break-all; }
+  .drop input { display: none; }
+
+  .actions { margin: 18px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 22px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  #compareBtn { background: var(--blue); color: #fff; }
+  #compareBtn:hover:enabled { background: var(--blue-dark); }
+  #compareBtn:disabled { background: #b8c4d2; cursor: not-allowed; }
+  #csvBtn { background: var(--yellow); color: var(--ink); display: none; }
+  #status { font-size: 13.5px; color: var(--muted); }
+  #status.error { color: var(--red); font-weight: 600; }
+
+  #summary {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--yellow);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 14.5px;
+    margin-bottom: 14px;
+  }
+  #warnings {
+    display: none;
+    background: #fff8e1;
+    border: 1px solid #f0dfa0;
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-size: 13px;
+    color: var(--amber);
+    margin-bottom: 14px;
+    white-space: pre-wrap;
+  }
+
+  .table-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  td.desc { white-space: normal; min-width: 220px; }
+  th { background: #f0f3f7; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); position: sticky; top: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 700; }
+  .badge.missing_in_supplier { background: #fdecea; color: var(--red); }
+  .badge.missing_in_tahan { background: #fff3e0; color: var(--amber); }
+  .badge.value_mismatch { background: #ede7f6; color: #5e35b1; }
+
+  .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Statement Reconciliation</h1>
+  <p>Upload our statement and the supplier's statement, then compare. Only discrepancies are shown.</p>
+</header>
+
+<main>
+  <div class="uploads">
+    <div class="drop" id="dropOurs">
+      <h2>Our file</h2>
+      <p class="hint">Fixed-template statement of account (doPDF). Click or drop a PDF.</p>
+      <p class="filename" id="nameOurs"></p>
+      <input type="file" id="fileOurs" accept="application/pdf">
+    </div>
+    <div class="drop" id="dropSupplier">
+      <h2>Supplier file</h2>
+      <p class="hint">The supplier's own statement, any format. Click or drop a PDF.</p>
+      <p class="filename" id="nameSupplier"></p>
+      <input type="file" id="fileSupplier" accept="application/pdf">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="compareBtn" disabled>Compare</button>
+    <button id="csvBtn">Download CSV</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="summary"></div>
+  <div id="warnings"></div>
+  <div class="allclear" id="allclear">No discrepancies — every transaction matched.</div>
+
+  <div class="table-wrap" id="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Issue</th><th>Date</th><th>ID</th><th>Description</th>
+          <th>Our debit</th><th>Our credit</th>
+          <th>Supplier debit</th><th>Supplier credit</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+(function () {
+  var MAX_BYTES = 3.2 * 1024 * 1024; // base64 must stay under Vercel's 4.5 MB body limit
+  var files = { ours: null, supplier: null };
+  var lastIssues = [];
+
+  function setupDrop(zoneId, inputId, nameId, key) {
+    var zone = document.getElementById(zoneId);
+    var input = document.getElementById(inputId);
+    var name = document.getElementById(nameId);
+    function accept(file) {
+      if (!file) return;
+      if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+        setStatus('"' + file.name + '" is not a PDF.', true); return;
+      }
+      if (file.size > MAX_BYTES) {
+        setStatus('"' + file.name + '" is over 3 MB — compress or split it first.', true); return;
+      }
+      files[key] = file;
+      name.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+      zone.classList.add('loaded');
+      setStatus('');
+      updateButton();
+    }
+    zone.addEventListener('click', function () { input.click(); });
+    input.addEventListener('change', function () { accept(input.files[0]); });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('dragover'); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault(); zone.classList.remove('dragover');
+      accept(e.dataTransfer.files[0]);
+    });
+  }
+
+  function updateButton() {
+    document.getElementById('compareBtn').disabled = !(files.ours && files.supplier);
+  }
+
+  function setStatus(msg, isError) {
+    var el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = isError ? 'error' : '';
+  }
+
+  function toBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(String(r.result).split(',')[1]); };
+      r.onerror = function () { reject(new Error('Could not read ' + file.name)); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().catch(function () {
+        throw new Error(url + ' returned ' + res.status + ' with no JSON body');
+      }).then(function (data) {
+        if (!res.ok || data.error) throw new Error(data.error || (url + ' failed (' + res.status + ')'));
+        return data;
+      });
+    });
+  }
+
+  function fmt(v) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  var LABELS = {
+    missing_in_supplier: 'Missing in supplier',
+    missing_in_tahan: 'Missing in ours',
+    value_mismatch: 'Value mismatch'
+  };
+
+  function render(result, warnings) {
+    var s = result.summary;
+    var issues = result.issues || [];
+    lastIssues = issues;
+
+    var summaryEl = document.getElementById('summary');
+    summaryEl.style.display = 'block';
+    summaryEl.innerHTML =
+      '<strong>' + s.missing_in_supplier + ' missing in supplier, ' +
+      s.missing_in_tahan + ' missing in ours, ' +
+      s.value_mismatch + ' mismatch' + (s.value_mismatch === 1 ? '' : 'es') +
+      '</strong> out of ' + s.our_transactions + ' of our transactions (' +
+      s.supplier_transactions + ' on the supplier side, ' + s.matched + ' matched cleanly).';
+
+    var warnEl = document.getElementById('warnings');
+    if (warnings && warnings.length) {
+      warnEl.style.display = 'block';
+      warnEl.textContent = 'Parser warnings from our file:\n• ' + warnings.join('\n• ');
+    } else {
+      warnEl.style.display = 'none';
+    }
+
+    var tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    var hasIssues = issues.length > 0;
+    document.getElementById('tableWrap').style.display = hasIssues ? 'block' : 'none';
+    document.getElementById('allclear').style.display = hasIssues ? 'none' : 'block';
+    document.getElementById('csvBtn').style.display = hasIssues ? 'inline-block' : 'none';
+
+    issues.forEach(function (row) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><span class="badge ' + esc(row.issue) + '">' + (LABELS[row.issue] || esc(row.issue)) + '</span></td>' +
+        '<td>' + esc(row.date) + '</td>' +
+        '<td>' + esc(row.id) + '</td>' +
+        '<td class="desc">' + esc(row.description) + '</td>' +
+        '<td class="num">' + fmt(row.our_debit) + '</td>' +
+        '<td class="num">' + fmt(row.our_credit) + '</td>' +
+        '<td class="num">' + fmt(row.supplier_debit) + '</td>' +
+        '<td class="num">' + fmt(row.supplier_credit) + '</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('compareBtn').addEventListener('click', function () {
+    var btn = this;
+    btn.disabled = true;
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('tableWrap').style.display = 'none';
+    document.getElementById('allclear').style.display = 'none';
+    document.getElementById('csvBtn').style.display = 'none';
+    document.getElementById('warnings').style.display = 'none';
+    setStatus('Reading files…');
+
+    Promise.all([toBase64(files.ours), toBase64(files.supplier)])
+      .then(function (b64s) {
+        setStatus('Extracting both statements… (the supplier file goes through Claude, this can take up to a minute)');
+        return Promise.all([
+          post('/api/extract-ours', { pdf_base64: b64s[0] }),
+          post('/api/extract-supplier', { pdf_base64: b64s[1] })
+        ]);
+      })
+      .then(function (results) {
+        var ours = results[0], supplier = results[1];
+        setStatus('Matching ' + ours.rows.length + ' vs ' + supplier.rows.length + ' rows…');
+        return post('/api/compare', { ours: ours.rows, supplier: supplier.rows })
+          .then(function (cmp) { render(cmp, ours.warnings); });
+      })
+      .then(function () { setStatus('Done.'); })
+      .catch(function (err) { setStatus(err.message, true); })
+      .finally(function () { btn.disabled = false; updateButton(); });
+  });
+
+  document.getElementById('csvBtn').addEventListener('click', function () {
+    var header = ['issue', 'date', 'id', 'description',
+                  'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'];
+    function cell(v) {
+      if (v === null || v === undefined) v = '';
+      v = String(v);
+      return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+    var lines = [header.join(',')];
+    lastIssues.forEach(function (r) {
+      lines.push(header.map(function (k) { return cell(r[k]); }).join(','));
+    });
+    // BOM so Excel opens Arabic descriptions correctly
+    var blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'reconciliation-issues.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  });
+
+  setupDrop('dropOurs', 'fileOurs', 'nameOurs', 'ours');
+  setupDrop('dropSupplier', 'fileSupplier', 'nameSupplier', 'supplier');
+})();
+</script>
+</body>
+</html>
