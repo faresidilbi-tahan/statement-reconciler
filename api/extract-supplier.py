@@ -1,100 +1,297 @@
 """
 POST /api/extract-supplier
 Body: { "pdf_base64": "<base64 of the supplier statement>" }
-The supplier's format is unknown and varies per supplier, so the PDF is sent
-to Claude as a document content block (preserves the visual table layout,
-unlike flattened text) with an extraction prompt.
 
-Response: { "rows": [...] }  -- same row schema as extract-ours.
-Requires the ANTHROPIC_API_KEY environment variable in Vercel.
+Deterministic supplier-statement parser - no LLM, no external calls.
+Strategy: find a header line containing recognizable column keywords
+(English or Arabic), use the header word positions as column anchors,
+then assign every word on each row to a column by x position.
+Falls back to pdfplumber's ruled-table extraction when the PDF draws
+table lines.
+
+Limitations (reported as errors/warnings, never silently):
+ - scanned/image PDFs have no text layer and cannot be parsed
+ - a supplier whose headers match none of the keywords below needs a
+   keyword added to COLUMN_KEYWORDS
+
+Response: { "rows": [...], "warnings": [...], "pages": n }
+Row schema matches extract-ours.
 """
 
 from http.server import BaseHTTPRequestHandler
+import base64
+import io
 import json
-import os
+import re
 
-import anthropic
+import pdfplumber
 
-MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 16000
+# ------------------------------------------------------------ keywords
 
-EXTRACTION_PROMPT = """You are extracting line items from a supplier's statement of account PDF so they can be reconciled against our own accounting records. The statement may be in English or Arabic, and its layout is unknown.
+COLUMN_KEYWORDS = {
+    "date": ["date", "تاريخ", "التاريخ"],
+    "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "doc",
+           "document", "no.", "number", "num", "رقم", "سند", "مستند",
+           "فاتورة", "المرجع", "مرجع"],
+    "description": ["description", "details", "narration", "particulars",
+                    "memo", "remarks", "بيان", "البيان", "التفاصيل",
+                    "الوصف", "ملاحظات"],
+    "debit": ["debit", "dr", "مدين"],
+    "credit": ["credit", "cr", "دائن"],
+    "balance": ["balance", "رصيد", "الرصيد"],
+}
 
-Return ONLY a JSON array. No markdown fences, no commentary, no keys outside the array.
+OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "افتتاحي", "سابق",
+                 "مدور", "رصيد اول")
+CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand",
+                 "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
+SKIP_WORDS = ("statement", "page ", "printed", "tel:", "fax:", "p.o.box",
+              "www.", "@")
 
-Each statement line item becomes one object:
-{"date": "YYYY-MM-DD", "id": "...", "description": "...", "debit": 0, "credit": 0, "balance": 0, "row_type": "transaction"}
-
-Rules:
-- Include every line item from every page, in document order.
-- "date": convert whatever date format is printed to YYYY-MM-DD. Assume day/month/year when ambiguous. Use "" if the row has no date.
-- "id": the invoice number, voucher number, or document reference printed for that row (letters and digits exactly as printed). If several references exist, prefer the invoice/voucher number. Use "" if none.
-- "description": the narrative/description text as printed (Arabic text is fine as-is).
-- "debit" and "credit": plain numbers, no thousands separators. Use 0 for an empty column. Copy each amount into the column it is printed in; do not reinterpret or swap sides.
-- "balance": the running balance for the row if printed, else 0. If the balance carries a CR/DR or -/+ marker, output just the number.
-- "row_type": "opening_balance" for opening / brought-forward rows, "closing_balance" for closing / carried-forward / final total rows, "transaction" for everything else.
-- Do NOT emit rows for column headers, page headers/footers, addresses, subtotals repeated at page breaks, or blank separators.
-- If two printed lines are one logical item (wrapped description), merge them into one object.
-
-Output the JSON array and nothing else."""
-
-
-def extract_rows(pdf_b64):
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_TOKENS,
-        temperature=0,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64,
-                    },
-                },
-                {"type": "text", "text": EXTRACTION_PROMPT},
-            ],
-        }],
-    )
-
-    if message.stop_reason == "max_tokens":
-        raise ValueError(
-            "Statement is too long for one extraction pass - split the PDF and retry."
-        )
-
-    text = "".join(block.text for block in message.content if block.type == "text")
-    # tolerate stray fences or preamble despite the prompt
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("Claude did not return a JSON array.")
-    rows = json.loads(text[start:end + 1])
-
-    cleaned = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        cleaned.append({
-            "date": str(r.get("date") or ""),
-            "id": str(r.get("id") or ""),
-            "description": str(r.get("description") or ""),
-            "debit": _num(r.get("debit")),
-            "credit": _num(r.get("credit")),
-            "balance": _num(r.get("balance")),
-            "row_type": r.get("row_type") if r.get("row_type") in
-                ("transaction", "opening_balance", "closing_balance") else "transaction",
-        })
-    return cleaned
+DATE_RE = re.compile(r"^(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})$")
+AMOUNT_RE = re.compile(r"^\(?-?[\d,]+(?:\.\d+)?\)?(CR|DR)?$", re.IGNORECASE)
 
 
-def _num(v):
+def match_column(text):
+    t = text.strip().lower().rstrip(":.")
+    for col, words in COLUMN_KEYWORDS.items():
+        if t in words:
+            return col
+    return None
+
+
+def parse_amount(token):
+    m = AMOUNT_RE.match(token.strip())
+    if not m:
+        return None
+    s = token.strip()
+    if m.group(1):
+        s = s[: len(s) - 2]
+    s = s.replace(",", "").replace("(", "-").replace(")", "")
     try:
-        return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+        return float(s)
     except ValueError:
-        return 0.0
+        return None
+
+
+def parse_date(token):
+    """Day-first for dd/mm/yyyy; also accepts yyyy-mm-dd. -> YYYY-MM-DD or None."""
+    m = DATE_RE.match(token.strip())
+    if not m:
+        return None
+    a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if a > 31:                       # yyyy-mm-dd
+        y, mo, d = a, b, c
+    else:                            # dd-mm-yy(yy)
+        d, mo, y = a, b, c
+        if y < 100:
+            y += 2000
+    if not (1 <= d <= 31 and 1 <= mo <= 12 and 1900 < y < 2100):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}"
+
+
+# ------------------------------------------------------------ word strategy
+
+def group_lines(page):
+    words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0,
+                               keep_blank_chars=False)
+    words.sort(key=lambda w: (w["top"], w["x0"]))
+    lines, cur, cur_top = [], [], None
+    for w in words:
+        if cur_top is None or abs(w["top"] - cur_top) <= 2.5:
+            cur.append(w)
+            if cur_top is None:
+                cur_top = w["top"]
+        else:
+            lines.append(sorted(cur, key=lambda x: x["x0"]))
+            cur, cur_top = [w], w["top"]
+    if cur:
+        lines.append(sorted(cur, key=lambda x: x["x0"]))
+    return lines
+
+
+def find_header(lines):
+    """Header = the line with the most distinct column-keyword matches,
+    requiring >= 3 fields including at least one amount column."""
+    best, best_count = None, 0
+    for line in lines:
+        cols = {}
+        for w in line:
+            col = match_column(w["text"])
+            if col and col not in cols:
+                cols[col] = (w["x0"] + w["x1"]) / 2.0
+        if len(cols) >= 3 and any(c in cols for c in ("debit", "credit", "balance")):
+            if len(cols) > best_count:
+                best, best_count = cols, len(cols)
+    return best
+
+
+def build_intervals(anchors, page_width):
+    """Column x-intervals from the midpoints between adjacent anchors."""
+    ordered = sorted(anchors.items(), key=lambda kv: kv[1])
+    intervals = []
+    for idx, (col, x) in enumerate(ordered):
+        left = 0 if idx == 0 else (ordered[idx - 1][1] + x) / 2.0
+        right = page_width if idx == len(ordered) - 1 else (x + ordered[idx + 1][1]) / 2.0
+        intervals.append((col, left, right))
+    return intervals
+
+
+def assign_columns(line, intervals):
+    cells = {col: [] for col, _, _ in intervals}
+    for w in line:
+        center = (w["x0"] + w["x1"]) / 2.0
+        for col, left, right in intervals:
+            if left <= center < right:
+                cells[col].append(w["text"].strip())
+                break
+    return {col: " ".join(v).strip() for col, v in cells.items()}
+
+
+def build_row(cells, raw_low):
+    date = parse_date(cells.get("date", "")) or ""
+    debit = parse_amount(cells.get("debit", ""))
+    credit = parse_amount(cells.get("credit", ""))
+    balance = parse_amount(cells.get("balance", ""))
+
+    if any(k in raw_low for k in OPENING_WORDS):
+        row_type = "opening_balance"
+    elif any(k in raw_low for k in CLOSING_WORDS):
+        row_type = "closing_balance"
+    else:
+        row_type = "transaction"
+
+    has_data = bool(date) or any(v is not None for v in (debit, credit, balance))
+    if not has_data:
+        return None
+    return {
+        "date": date,
+        "id": cells.get("id", ""),
+        "description": cells.get("description", ""),
+        "debit": debit or 0.0,
+        "credit": credit or 0.0,
+        "balance": balance or 0.0,
+        "row_type": row_type,
+    }
+
+
+def is_continuation(cells):
+    """Wrapped description: text only in description/id, no date, no amounts."""
+    if parse_date(cells.get("date", "")):
+        return False
+    if any(parse_amount(cells.get(c, "")) is not None for c in ("debit", "credit", "balance")):
+        return False
+    return bool(cells.get("description") or cells.get("id"))
+
+
+def parse_words_strategy(pdf):
+    rows, warnings = [], []
+    anchors = None
+    for page_no, page in enumerate(pdf.pages, start=1):
+        lines = group_lines(page)
+        page_anchors = find_header(lines)
+        if page_anchors:
+            anchors = page_anchors
+        if not anchors:
+            continue
+        intervals = build_intervals(anchors, page.width)
+
+        for line in lines:
+            raw = " ".join(w["text"] for w in line).strip()
+            if not raw:
+                continue
+            raw_low = raw.lower()
+            # skip the header line itself and obvious boilerplate
+            header_hits = sum(1 for w in line if match_column(w["text"]))
+            if header_hits >= 3:
+                continue
+            if any(s in raw_low for s in SKIP_WORDS):
+                continue
+
+            cells = assign_columns(line, intervals)
+            row = build_row(cells, raw_low)
+            if row:
+                rows.append(row)
+            elif is_continuation(cells) and rows:
+                extra = (cells.get("description", "") + " " + cells.get("id", "")).strip()
+                rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
+            elif len(raw) > 3:
+                warnings.append(f"page {page_no}: unclassified line: {raw[:120]}")
+    return rows, warnings, anchors is not None
+
+
+# ------------------------------------------------------------ table strategy
+
+def parse_tables_strategy(pdf):
+    rows, warnings = [], []
+    col_map = None  # cell index -> field, persists across pages
+    found_any = False
+    for page in pdf.pages:
+        for table in page.extract_tables():
+            for cells in table:
+                cells = [(c or "").replace("\n", " ").strip() for c in cells]
+                mapped = {}
+                for idx, c in enumerate(cells):
+                    col = match_column(c)
+                    if col and col not in mapped:
+                        mapped[col] = idx
+                if len(mapped) >= 3 and any(c in mapped for c in ("debit", "credit", "balance")):
+                    col_map = mapped
+                    found_any = True
+                    continue
+                if not col_map:
+                    continue
+
+                def get(field):
+                    i = col_map.get(field, -1)
+                    return cells[i] if 0 <= i < len(cells) else ""
+
+                celld = {f: get(f) for f in COLUMN_KEYWORDS}
+                raw_low = " ".join(cells).lower()
+                row = build_row(celld, raw_low)
+                if row:
+                    rows.append(row)
+                elif is_continuation(celld) and rows:
+                    extra = (celld.get("description", "") + " " + celld.get("id", "")).strip()
+                    if extra:
+                        rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
+    return rows, warnings, found_any
+
+
+# ------------------------------------------------------------ entry point
+
+def parse_pdf(pdf_bytes):
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        pages = len(pdf.pages)
+
+        total_chars = sum(len(p.chars) for p in pdf.pages)
+        if total_chars < 20:
+            raise ValueError(
+                "This PDF has no text layer (it is a scan/image). "
+                "It needs OCR before it can be parsed without an LLM."
+            )
+
+        t_rows, t_warn, t_found = parse_tables_strategy(pdf)
+        w_rows, w_warn, w_found = parse_words_strategy(pdf)
+
+    # prefer whichever strategy recognized a header and produced more rows
+    candidates = []
+    if t_found:
+        candidates.append(("table", t_rows, t_warn))
+    if w_found:
+        candidates.append(("words", w_rows, w_warn))
+    if not candidates:
+        raise ValueError(
+            "Could not find a recognizable column header (Date/Debit/Credit/"
+            "Balance or Arabic equivalents) in this statement. This supplier's "
+            "format needs a keyword added to COLUMN_KEYWORDS in extract-supplier.py."
+        )
+    strategy, rows, warnings = max(candidates, key=lambda c: len(c[1]))
+    warnings = [f"[{strategy} strategy] {w}" for w in warnings]
+    if not rows:
+        warnings.append(f"[{strategy} strategy] Header found but no data rows extracted.")
+    return {"rows": rows, "warnings": warnings, "pages": pages}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -108,20 +305,19 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                return self._send(500, {"error": "ANTHROPIC_API_KEY is not set in Vercel environment variables."})
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
             b64 = data.get("pdf_base64", "")
             if "," in b64[:80]:
                 b64 = b64.split(",", 1)[1]
-            if not b64:
-                return self._send(400, {"error": "pdf_base64 is required."})
-            rows = extract_rows(b64)
-            self._send(200, {"rows": rows})
+            pdf_bytes = base64.b64decode(b64)
+            if not pdf_bytes.startswith(b"%PDF"):
+                return self._send(400, {"error": "File does not look like a PDF."})
+            result = parse_pdf(pdf_bytes)
+            self._send(200, result)
         except json.JSONDecodeError:
             self._send(400, {"error": "Invalid JSON body."})
-        except anthropic.APIStatusError as e:
-            self._send(502, {"error": f"Claude API error {e.status_code}: {e.message}"})
+        except ValueError as e:
+            self._send(422, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
             self._send(500, {"error": f"Extraction failed: {e}"})
