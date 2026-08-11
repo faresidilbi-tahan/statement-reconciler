@@ -1,21 +1,14 @@
 """
 POST /api/extract-supplier
-Body: { "pdf_base64": "<base64 of the supplier statement>" }
-
 Deterministic supplier-statement parser - no LLM, no external calls.
-Strategy: find a header line containing recognizable column keywords
-(English or Arabic), use the header word positions as column anchors,
-then assign every word on each row to a column by x position.
-Falls back to pdfplumber's ruled-table extraction when the PDF draws
-table lines.
+Finds a header line with recognizable column keywords (English or Arabic),
+uses header positions as column anchors, and buckets every word into a
+column. Also runs pdfplumber's ruled-table extraction; the strategy that
+recognizes a header and yields more rows wins.
 
-Limitations (reported as errors/warnings, never silently):
- - scanned/image PDFs have no text layer and cannot be parsed
- - a supplier whose headers match none of the keywords below needs a
-   keyword added to COLUMN_KEYWORDS
-
-Response: { "rows": [...], "warnings": [...], "pages": n }
-Row schema matches extract-ours.
+Row id priority: INV/C\\N number inside the description (this is the number
+that also appears on our statement as "Inv#"), else the reference column.
+Dates like "Jan 12, 2026" and negative-signed amounts are normalized.
 """
 
 from http.server import BaseHTTPRequestHandler
@@ -26,13 +19,11 @@ import re
 
 import pdfplumber
 
-# ------------------------------------------------------------ keywords
-
 COLUMN_KEYWORDS = {
     "date": ["date", "تاريخ", "التاريخ"],
     "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "doc",
-           "document", "no.", "number", "num", "رقم", "سند", "مستند",
-           "فاتورة", "المرجع", "مرجع"],
+           "document", "no", "number", "num", "trx", "nb", "رقم", "سند",
+           "مستند", "فاتورة", "المرجع", "مرجع"],
     "description": ["description", "details", "narration", "particulars",
                     "memo", "remarks", "بيان", "البيان", "التفاصيل",
                     "الوصف", "ملاحظات"],
@@ -41,32 +32,42 @@ COLUMN_KEYWORDS = {
     "balance": ["balance", "رصيد", "الرصيد"],
 }
 
-OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "افتتاحي", "سابق",
-                 "مدور", "رصيد اول")
+OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "balance until",
+                 "افتتاحي", "سابق", "مدور", "رصيد اول")
 CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand",
+                 "ending balance", "end date", "balance as at",
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
-SKIP_WORDS = ("statement", "page ", "printed", "tel:", "fax:", "p.o.box",
-              "www.", "@")
+SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
+              "p.o.box", "www.", "@", "pdc")
 
-DATE_RE = re.compile(r"^(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})$")
-AMOUNT_RE = re.compile(r"^\(?-?[\d,]+(?:\.\d+)?\)?(CR|DR)?$", re.IGNORECASE)
+AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
+NUM_DATE_RE = re.compile(r"(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})")
+MONTH_DATE_RE = re.compile(
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*,?\s+(\d{4})",
+    re.IGNORECASE)
+MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+          "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+REF_RE = re.compile(r"(?:INV|C/N)\s*[:#]?\s*(\d{4,})", re.IGNORECASE)
 
 
 def match_column(text):
-    t = text.strip().lower().rstrip(":.")
+    t = text.strip().lower().strip(":.")
     for col, words in COLUMN_KEYWORDS.items():
         if t in words:
+            return col
+    parts = [p.strip(":.") for p in t.split()]
+    for col, words in COLUMN_KEYWORDS.items():
+        if any(p in words for p in parts):
             return col
     return None
 
 
 def parse_amount(token):
-    m = AMOUNT_RE.match(token.strip())
+    token = token.strip()
+    m = AMOUNT_RE.match(token)
     if not m:
         return None
-    s = token.strip()
-    if m.group(1):
-        s = s[: len(s) - 2]
+    s = token[: len(token) - 2] if m.group(1) else token
     s = s.replace(",", "").replace("(", "-").replace(")", "")
     try:
         return float(s)
@@ -74,28 +75,78 @@ def parse_amount(token):
         return None
 
 
-def parse_date(token):
-    """Day-first for dd/mm/yyyy; also accepts yyyy-mm-dd. -> YYYY-MM-DD or None."""
-    m = DATE_RE.match(token.strip())
-    if not m:
+def find_date(text):
+    """Search a cell for a date in 'Jan 12, 2026' or numeric form -> ISO."""
+    m = MONTH_DATE_RE.search(text)
+    if m:
+        mo = MONTHS[m.group(1).lower()[:3]]
+        d, y = int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = NUM_DATE_RE.search(text)
+    if m:
+        a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if a > 31:
+            y, mo, d = a, b, c
+        else:
+            d, mo, y = a, b, c
+            if y < 100:
+                y += 2000
+        if 1 <= d <= 31 and 1 <= mo <= 12 and 1900 < y < 2100:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    return None
+
+
+def extract_row_id(id_cell, description):
+    m = REF_RE.search(description)
+    if m:
+        return m.group(1)
+    for tok in id_cell.split():
+        if re.search(r"\d", tok) and not find_date(tok):
+            return tok
+    return ""
+
+
+def build_row(cells, raw_low):
+    date = find_date(cells.get("date", "")) or ""
+    debit = parse_amount(cells.get("debit", ""))
+    credit = parse_amount(cells.get("credit", ""))
+    balance = parse_amount(cells.get("balance", ""))
+
+    if any(k in raw_low for k in OPENING_WORDS):
+        row_type = "opening_balance"
+    elif any(k in raw_low for k in CLOSING_WORDS):
+        row_type = "closing_balance"
+    else:
+        row_type = "transaction"
+
+    if not (date or any(v is not None for v in (debit, credit, balance))):
         return None
-    a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    if a > 31:                       # yyyy-mm-dd
-        y, mo, d = a, b, c
-    else:                            # dd-mm-yy(yy)
-        d, mo, y = a, b, c
-        if y < 100:
-            y += 2000
-    if not (1 <= d <= 31 and 1 <= mo <= 12 and 1900 < y < 2100):
-        return None
-    return f"{y:04d}-{mo:02d}-{d:02d}"
+    desc = cells.get("description", "")
+    return {
+        "date": date,
+        "id": extract_row_id(cells.get("id", ""), desc) if row_type == "transaction" else "",
+        "description": desc,
+        # sign is presentation (this supplier prints credits negative)
+        "debit": abs(debit) if debit is not None else 0.0,
+        "credit": abs(credit) if credit is not None else 0.0,
+        "balance": balance if balance is not None else 0.0,
+        "row_type": row_type,
+    }
+
+
+def is_continuation(cells):
+    if find_date(cells.get("date", "")):
+        return False
+    if any(parse_amount(cells.get(c, "")) is not None for c in ("debit", "credit", "balance")):
+        return False
+    return bool(cells.get("description") or cells.get("id"))
 
 
 # ------------------------------------------------------------ word strategy
 
 def group_lines(page):
-    words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0,
-                               keep_blank_chars=False)
+    words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0, keep_blank_chars=False)
     words.sort(key=lambda w: (w["top"], w["x0"]))
     lines, cur, cur_top = [], [], None
     for w in words:
@@ -112,8 +163,6 @@ def group_lines(page):
 
 
 def find_header(lines):
-    """Header = the line with the most distinct column-keyword matches,
-    requiring >= 3 fields including at least one amount column."""
     best, best_count = None, 0
     for line in lines:
         cols = {}
@@ -128,7 +177,6 @@ def find_header(lines):
 
 
 def build_intervals(anchors, page_width):
-    """Column x-intervals from the midpoints between adjacent anchors."""
     ordered = sorted(anchors.items(), key=lambda kv: kv[1])
     intervals = []
     for idx, (col, x) in enumerate(ordered):
@@ -149,42 +197,6 @@ def assign_columns(line, intervals):
     return {col: " ".join(v).strip() for col, v in cells.items()}
 
 
-def build_row(cells, raw_low):
-    date = parse_date(cells.get("date", "")) or ""
-    debit = parse_amount(cells.get("debit", ""))
-    credit = parse_amount(cells.get("credit", ""))
-    balance = parse_amount(cells.get("balance", ""))
-
-    if any(k in raw_low for k in OPENING_WORDS):
-        row_type = "opening_balance"
-    elif any(k in raw_low for k in CLOSING_WORDS):
-        row_type = "closing_balance"
-    else:
-        row_type = "transaction"
-
-    has_data = bool(date) or any(v is not None for v in (debit, credit, balance))
-    if not has_data:
-        return None
-    return {
-        "date": date,
-        "id": cells.get("id", ""),
-        "description": cells.get("description", ""),
-        "debit": debit or 0.0,
-        "credit": credit or 0.0,
-        "balance": balance or 0.0,
-        "row_type": row_type,
-    }
-
-
-def is_continuation(cells):
-    """Wrapped description: text only in description/id, no date, no amounts."""
-    if parse_date(cells.get("date", "")):
-        return False
-    if any(parse_amount(cells.get(c, "")) is not None for c in ("debit", "credit", "balance")):
-        return False
-    return bool(cells.get("description") or cells.get("id"))
-
-
 def parse_words_strategy(pdf):
     rows, warnings = [], []
     anchors = None
@@ -197,27 +209,33 @@ def parse_words_strategy(pdf):
             continue
         intervals = build_intervals(anchors, page.width)
 
+        prev_was_data = False
         for line in lines:
             raw = " ".join(w["text"] for w in line).strip()
             if not raw:
                 continue
             raw_low = raw.lower()
-            # skip the header line itself and obvious boilerplate
             header_hits = sum(1 for w in line if match_column(w["text"]))
             if header_hits >= 3:
+                prev_was_data = False
                 continue
             if any(s in raw_low for s in SKIP_WORDS):
+                prev_was_data = False
                 continue
 
             cells = assign_columns(line, intervals)
             row = build_row(cells, raw_low)
             if row:
                 rows.append(row)
-            elif is_continuation(cells) and rows:
+                prev_was_data = True
+            elif prev_was_data and is_continuation(cells) and rows:
                 extra = (cells.get("description", "") + " " + cells.get("id", "")).strip()
                 rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
+                if rows[-1]["row_type"] == "transaction" and not rows[-1]["id"]:
+                    rows[-1]["id"] = extract_row_id("", rows[-1]["description"])
             elif len(raw) > 3:
                 warnings.append(f"page {page_no}: unclassified line: {raw[:120]}")
+                prev_was_data = False
     return rows, warnings, anchors is not None
 
 
@@ -225,10 +243,11 @@ def parse_words_strategy(pdf):
 
 def parse_tables_strategy(pdf):
     rows, warnings = [], []
-    col_map = None  # cell index -> field, persists across pages
+    col_map = None
     found_any = False
     for page in pdf.pages:
         for table in page.extract_tables():
+            prev_was_data = False
             for cells in table:
                 cells = [(c or "").replace("\n", " ").strip() for c in cells]
                 mapped = {}
@@ -239,6 +258,7 @@ def parse_tables_strategy(pdf):
                 if len(mapped) >= 3 and any(c in mapped for c in ("debit", "credit", "balance")):
                     col_map = mapped
                     found_any = True
+                    prev_was_data = False
                     continue
                 if not col_map:
                     continue
@@ -249,33 +269,32 @@ def parse_tables_strategy(pdf):
 
                 celld = {f: get(f) for f in COLUMN_KEYWORDS}
                 raw_low = " ".join(cells).lower()
+                if any(s in raw_low for s in SKIP_WORDS):
+                    prev_was_data = False
+                    continue
                 row = build_row(celld, raw_low)
                 if row:
                     rows.append(row)
-                elif is_continuation(celld) and rows:
+                    prev_was_data = True
+                elif prev_was_data and is_continuation(celld) and rows:
                     extra = (celld.get("description", "") + " " + celld.get("id", "")).strip()
                     if extra:
                         rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
     return rows, warnings, found_any
 
 
-# ------------------------------------------------------------ entry point
-
 def parse_pdf(pdf_bytes):
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         pages = len(pdf.pages)
-
         total_chars = sum(len(p.chars) for p in pdf.pages)
         if total_chars < 20:
             raise ValueError(
                 "This PDF has no text layer (it is a scan/image). "
                 "It needs OCR before it can be parsed without an LLM."
             )
-
         t_rows, t_warn, t_found = parse_tables_strategy(pdf)
         w_rows, w_warn, w_found = parse_words_strategy(pdf)
 
-    # prefer whichever strategy recognized a header and produced more rows
     candidates = []
     if t_found:
         candidates.append(("table", t_rows, t_warn))
@@ -284,8 +303,8 @@ def parse_pdf(pdf_bytes):
     if not candidates:
         raise ValueError(
             "Could not find a recognizable column header (Date/Debit/Credit/"
-            "Balance or Arabic equivalents) in this statement. This supplier's "
-            "format needs a keyword added to COLUMN_KEYWORDS in extract-supplier.py."
+            "Balance or Arabic equivalents). This supplier's format needs a "
+            "keyword added to COLUMN_KEYWORDS in extract-supplier.py."
         )
     strategy, rows, warnings = max(candidates, key=lambda c: len(c[1]))
     warnings = [f"[{strategy} strategy] {w}" for w in warnings]
@@ -313,8 +332,7 @@ class handler(BaseHTTPRequestHandler):
             pdf_bytes = base64.b64decode(b64)
             if not pdf_bytes.startswith(b"%PDF"):
                 return self._send(400, {"error": "File does not look like a PDF."})
-            result = parse_pdf(pdf_bytes)
-            self._send(200, result)
+            self._send(200, parse_pdf(pdf_bytes))
         except json.JSONDecodeError:
             self._send(400, {"error": "Invalid JSON body."})
         except ValueError as e:
