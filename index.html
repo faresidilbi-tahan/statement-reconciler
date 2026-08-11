@@ -103,6 +103,20 @@
   .badge.missing_in_supplier { background: #fdecea; color: var(--red); }
   .badge.missing_in_tahan { background: #fff3e0; color: var(--amber); }
   .badge.value_mismatch { background: #ede7f6; color: #5e35b1; }
+  .badge.date_mismatch { background: #e3f2fd; color: #1565c0; }
+  .badge.id_mismatch { background: #fce4ec; color: #ad1457; }
+
+  .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; font-size: 13.5px; color: var(--muted); }
+  .filter-row label { display: flex; align-items: center; gap: 6px; }
+  .filter-row input[type="date"] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .filter-row button { background: #fff; color: var(--blue); border: 1px solid var(--blue); padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+
+  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+  .downloads button { font: inherit; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; border: 1px solid; }
+  .dl-common { background: #e8f5e9; color: #2e7d32; border-color: #2e7d32; }
+  .dl-missing { background: #fff3e0; color: var(--amber); border-color: var(--amber); }
+  .dl-diff { background: #ede7f6; color: #5e35b1; border-color: #5e35b1; }
+  .downloads button:disabled { opacity: .45; cursor: not-allowed; }
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
 </style>
@@ -129,16 +143,24 @@
     </div>
   </div>
 
+  <div class="filter-row">
+    <label>From <input type="date" id="dateFrom"></label>
+    <label>To <input type="date" id="dateTo"></label>
+    <button id="clearDatesBtn" type="button">Clear dates</button>
+    <span id="dateHint"></span>
+  </div>
+
   <div class="actions">
     <button id="compareBtn" disabled>Compare</button>
-    <button id="csvBtn">Download CSV</button>
     <span id="status"></span>
   </div>
 
   <div id="summary"></div>
-  <div id="matchedCallout" style="display:none; background:#e8f5e9; border:1px solid #c8e6c9; border-radius:8px; padding:12px 18px; font-size:14.5px; margin-bottom:14px;">
-    <strong id="matchedCount"></strong> transactions matched cleanly between the two files.
-    <button id="matchedCsvBtn" style="background:#fff; color:#2e7d32; border:1px solid #2e7d32; padding:6px 14px; border-radius:6px; font-weight:600; margin-left:10px; cursor:pointer;">Download matched CSV</button>
+  <div class="downloads" id="downloads" style="display:none;">
+    <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
+    <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
+    <button class="dl-missing" id="missingSupplierCsvBtn">Download missing from supplier</button>
+    <button class="dl-diff" id="diffCsvBtn">Download differences</button>
   </div>
   <div id="warnings"></div>
   <div class="allclear" id="allclear">No discrepancies — every transaction matched.</div>
@@ -240,8 +262,15 @@
   var LABELS = {
     missing_in_supplier: 'Missing in supplier',
     missing_in_tahan: 'Missing in ours',
-    value_mismatch: 'Value mismatch'
+    value_mismatch: 'Value mismatch',
+    date_mismatch: 'Date mismatch',
+    id_mismatch: 'ID mismatch'
   };
+  var DIFF_KINDS = ['value_mismatch', 'date_mismatch', 'id_mismatch'];
+
+  var lastMissingOurs = [];      // missing_in_tahan: rows only on supplier side
+  var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
+  var lastDiffs = [];
 
   function render(result, warnings) {
     var s = result.summary;
@@ -249,23 +278,20 @@
     var matched = result.matched || [];
     lastIssues = issues;
     lastMatched = matched;
-
-    var matchedCallout = document.getElementById('matchedCallout');
-    if (matched.length) {
-      matchedCallout.style.display = 'block';
-      document.getElementById('matchedCount').textContent = matched.length;
-    } else {
-      matchedCallout.style.display = 'none';
-    }
+    lastMissingOurs = issues.filter(function (r) { return r.issue === 'missing_in_tahan'; });
+    lastMissingSupplier = issues.filter(function (r) { return r.issue === 'missing_in_supplier'; });
+    lastDiffs = issues.filter(function (r) { return DIFF_KINDS.indexOf(r.issue) !== -1; });
 
     var summaryEl = document.getElementById('summary');
     summaryEl.style.display = 'block';
+    var diffTotal = s.value_mismatch + s.date_mismatch + s.id_mismatch;
     summaryEl.innerHTML =
-      '<strong>' + s.missing_in_supplier + ' missing in supplier, ' +
-      s.missing_in_tahan + ' missing in ours, ' +
-      s.value_mismatch + ' mismatch' + (s.value_mismatch === 1 ? '' : 'es') +
-      '</strong> out of ' + s.our_transactions + ' of our transactions (' +
-      s.supplier_transactions + ' on the supplier side, ' + s.matched + ' matched cleanly).' +
+      '<strong>' + s.matched + ' matched, ' +
+      diffTotal + ' difference' + (diffTotal === 1 ? '' : 's') +
+      ' (' + s.value_mismatch + ' value, ' + s.date_mismatch + ' date, ' + s.id_mismatch + ' id), ' +
+      s.missing_in_tahan + ' missing from our file, ' +
+      s.missing_in_supplier + ' missing from supplier</strong>' +
+      ' — ' + s.our_transactions + ' of our transactions vs ' + s.supplier_transactions + ' supplier rows.' +
       (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '');
 
     var warnEl = document.getElementById('warnings');
@@ -281,7 +307,12 @@
     var hasIssues = issues.length > 0;
     document.getElementById('tableWrap').style.display = hasIssues ? 'block' : 'none';
     document.getElementById('allclear').style.display = hasIssues ? 'none' : 'block';
-    document.getElementById('csvBtn').style.display = hasIssues ? 'inline-block' : 'none';
+    var dl = document.getElementById('downloads');
+    dl.style.display = 'flex';
+    document.getElementById('commonCsvBtn').disabled = matched.length === 0;
+    document.getElementById('missingOursCsvBtn').disabled = lastMissingOurs.length === 0;
+    document.getElementById('missingSupplierCsvBtn').disabled = lastMissingSupplier.length === 0;
+    document.getElementById('diffCsvBtn').disabled = lastDiffs.length === 0;
 
     issues.forEach(function (row) {
       var tr = document.createElement('tr');
@@ -300,20 +331,43 @@
     });
   }
 
+  function inRange(dateStr, from, to) {
+    if (!dateStr) return true; // keep rows with no date (e.g. malformed) rather than silently drop them
+    if (from && dateStr < from) return false;
+    if (to && dateStr > to) return false;
+    return true;
+  }
+
+  function filterRowsByDate(rows, from, to) {
+    if (!from && !to) return rows;
+    return rows.filter(function (r) {
+      // always keep opening/closing balance rows; they carry no comparable date range risk
+      if (r.row_type !== 'transaction') return true;
+      return inRange(r.date, from, to);
+    });
+  }
+
+  document.getElementById('clearDatesBtn').addEventListener('click', function () {
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
+  });
+
   document.getElementById('compareBtn').addEventListener('click', function () {
     var btn = this;
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
-    document.getElementById('csvBtn').style.display = 'none';
+    document.getElementById('downloads').style.display = 'none';
     document.getElementById('warnings').style.display = 'none';
-    document.getElementById('matchedCallout').style.display = 'none';
     setStatus('Reading files…');
+
+    var dateFrom = document.getElementById('dateFrom').value;
+    var dateTo = document.getElementById('dateTo').value;
 
     Promise.all([toBase64(files.ours), toBase64(files.supplier)])
       .then(function (b64s) {
-        setStatus('Extracting both statements… (the supplier file goes through Claude, this can take up to a minute)');
+        setStatus('Extracting both statements…');
         return Promise.all([
           post('/api/extract-ours', { pdf_base64: b64s[0] }),
           post('/api/extract-supplier', { pdf_base64: b64s[1] })
@@ -321,8 +375,13 @@
       })
       .then(function (results) {
         var ours = results[0], supplier = results[1];
-        setStatus('Matching ' + ours.rows.length + ' vs ' + supplier.rows.length + ' rows…');
-        return post('/api/compare', { ours: ours.rows, supplier: supplier.rows })
+        var oursRows = filterRowsByDate(ours.rows, dateFrom, dateTo);
+        var supplierRows = filterRowsByDate(supplier.rows, dateFrom, dateTo);
+        var hint = document.getElementById('dateHint');
+        hint.textContent = (dateFrom || dateTo) ?
+          '(filtered: ' + oursRows.length + ' of our rows, ' + supplierRows.length + ' of supplier rows)' : '';
+        setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
+        return post('/api/compare', { ours: oursRows, supplier: supplierRows })
           .then(function (cmp) { render(cmp, ours.warnings); });
       })
       .then(function () { setStatus('Done.'); })
@@ -330,16 +389,28 @@
       .finally(function () { btn.disabled = false; updateButton(); });
   });
 
-  document.getElementById('csvBtn').addEventListener('click', function () {
-    downloadCsv(lastIssues,
-      ['issue', 'date', 'id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
-      'reconciliation-issues.csv');
-  });
-
-  document.getElementById('matchedCsvBtn').addEventListener('click', function () {
+  document.getElementById('commonCsvBtn').addEventListener('click', function () {
     downloadCsv(lastMatched,
       ['date', 'id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
-      'reconciliation-matched.csv');
+      'common-matched.csv');
+  });
+
+  document.getElementById('missingOursCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastMissingOurs,
+      ['date', 'id', 'description', 'supplier_debit', 'supplier_credit'],
+      'missing-from-our-file.csv');
+  });
+
+  document.getElementById('missingSupplierCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastMissingSupplier,
+      ['date', 'id', 'description', 'our_debit', 'our_credit'],
+      'missing-from-supplier.csv');
+  });
+
+  document.getElementById('diffCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastDiffs,
+      ['issue', 'date', 'id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
+      'differences.csv');
   });
 
   function downloadCsv(rows, header, filename) {
