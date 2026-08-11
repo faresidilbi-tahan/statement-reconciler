@@ -2,13 +2,18 @@
 POST /api/compare
 Body: { "ours": [rows], "supplier": [rows] }   (row schema from the extractors)
 
-Matching, plain code, no LLM:
-  1. exact match on transaction id, normalized (strip leading zeros,
-     whitespace, lowercase), one-to-one
-  2. fallback for the leftovers: same date + a debit or credit amount that
-     matches (within 0.01) in either of the supplier's columns
-Opening/closing balance rows are excluded. Only problem rows are returned:
-  missing_in_supplier | missing_in_tahan | value_mismatch
+Matching, plain code, no LLM. A transaction is identified by three fields:
+id (normalized), date, amount (magnitude, side-independent). Matching runs
+in priority order:
+  1. all three agree                          -> common (clean match)
+  2. id + date agree, amount differs           -> value_mismatch
+  3. id + amount agree, date differs           -> date_mismatch
+  4. date + amount agree, id differs           -> id_mismatch
+  5. left over on our side                     -> missing_in_supplier
+  6. left over on supplier side                -> missing_in_tahan
+Each step only consumes rows not already matched by an earlier, stricter
+step, and each row is used at most once. Opening/closing balance rows are
+excluded from matching entirely.
 """
 
 from http.server import BaseHTTPRequestHandler
@@ -17,12 +22,6 @@ import re
 from datetime import datetime
 
 TOLERANCE = 0.01
-
-# Supplier statements are written from the supplier's perspective, so their
-# debit column is usually our credit and vice versa. With MIRROR_OK a row
-# whose amounts match cross-wise (our debit == their credit) counts as
-# matched. Set to False to require same-side matches only.
-MIRROR_OK = True
 
 
 def norm_id(v):
@@ -39,7 +38,7 @@ def norm_date(v):
             return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    return s  # unknown format: compare as-is
+    return s
 
 
 def num(v):
@@ -49,32 +48,56 @@ def num(v):
         return 0.0
 
 
-def close(a, b):
-    return abs(a - b) <= TOLERANCE + 1e-9
-
-
-def values_match(o, s):
-    direct = close(o["debit"], s["debit"]) and close(o["credit"], s["credit"])
-    mirrored = MIRROR_OK and close(o["debit"], s["credit"]) and close(o["credit"], s["debit"])
-    return direct or mirrored
-
-
 def clean(rows):
+    """Normalize raw extractor rows into comparison-ready records.
+    'amt' is the transaction's magnitude regardless of which column
+    (debit/credit) it printed in on either side - this is what makes an
+    id+amount or date+amount match work even though supplier statements
+    commonly mirror our debit/credit sides."""
     out = []
     for r in rows or []:
+        debit = num(r.get("debit"))
+        credit = num(r.get("credit"))
+        amt = round(debit if debit > TOLERANCE else credit, 2)
         out.append({
             "date": norm_date(r.get("date")),
             "id": str(r.get("id") or ""),
             "nid": norm_id(r.get("id")),
             "description": str(r.get("description") or ""),
-            "debit": num(r.get("debit")),
-            "credit": num(r.get("credit")),
+            "debit": debit,
+            "credit": credit,
+            "amt": amt,
             "row_type": r.get("row_type", "transaction"),
         })
     return [r for r in out if r["row_type"] == "transaction"]
 
 
-def issue(kind, o=None, s=None):
+def match_by_keys(ours, supplier, ours_pool, supplier_pool, keys):
+    """Greedily pair remaining rows that agree on every field in `keys`
+    (all must be non-empty on both sides to count). Returns matched pairs
+    plus the two leftover pools."""
+    sup_map = {}
+    for j in supplier_pool:
+        vals = tuple(supplier[j][k] for k in keys)
+        if any(v in ("", None) for v in vals):
+            continue
+        sup_map.setdefault(vals, []).append(j)
+
+    pairs, leftover_ours = [], []
+    for i in ours_pool:
+        vals = tuple(ours[i][k] for k in keys)
+        bucket = sup_map.get(vals) if not any(v in ("", None) for v in vals) else None
+        if bucket:
+            pairs.append((i, bucket.pop(0)))
+        else:
+            leftover_ours.append(i)
+
+    matched_j = {j for _, j in pairs}
+    leftover_supplier = [j for j in supplier_pool if j not in matched_j]
+    return pairs, leftover_ours, leftover_supplier
+
+
+def row_out(kind, o=None, s=None):
     src = o or s
     return {
         "issue": kind,
@@ -88,57 +111,43 @@ def issue(kind, o=None, s=None):
     }
 
 
+def matched_out(o, s):
+    return {
+        "date": o["date"],
+        "id": o["id"] or s["id"],
+        "description": o["description"],
+        "our_debit": o["debit"],
+        "our_credit": o["credit"],
+        "supplier_debit": s["debit"],
+        "supplier_credit": s["credit"],
+    }
+
+
 def compare(ours_raw, supplier_raw):
     ours = clean(ours_raw)
     supplier = clean(supplier_raw)
 
-    matched_pairs = []
-    s_unmatched = list(range(len(supplier)))
-    o_unmatched = []
+    o_pool = list(range(len(ours)))
+    s_pool = list(range(len(supplier)))
 
-    # pass 1: normalized id, one-to-one
-    by_id = {}
-    for j in s_unmatched:
-        nid = supplier[j]["nid"]
-        if nid:
-            by_id.setdefault(nid, []).append(j)
-    taken = set()
-    for i, o in enumerate(ours):
-        j = None
-        if o["nid"] and by_id.get(o["nid"]):
-            j = by_id[o["nid"]].pop(0)
-        if j is not None:
-            matched_pairs.append((i, j))
-            taken.add(j)
-        else:
-            o_unmatched.append(i)
-    s_unmatched = [j for j in s_unmatched if j not in taken]
+    exact, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "date", "amt"))
+    value_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "date"))
+    date_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "amt"))
+    id_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("date", "amt"))
 
-    # pass 2: same date + amount within tolerance in either supplier column
-    still = []
-    for i in o_unmatched:
-        o = ours[i]
-        amt = o["debit"] if o["debit"] > 0 else o["credit"]
-        j_found = None
-        if amt > 0 and o["date"]:
-            for j in s_unmatched:
-                s = supplier[j]
-                if s["date"] == o["date"] and (close(amt, s["debit"]) or close(amt, s["credit"])):
-                    j_found = j
-                    break
-        if j_found is not None:
-            matched_pairs.append((i, j_found))
-            s_unmatched.remove(j_found)
-        else:
-            still.append(i)
-    o_unmatched = still
+    matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact]
+    issues = []
+    for i, j in value_mm:
+        issues.append(row_out("value_mismatch", ours[i], supplier[j]))
+    for i, j in date_mm:
+        issues.append(row_out("date_mismatch", ours[i], supplier[j]))
+    for i, j in id_mm:
+        issues.append(row_out("id_mismatch", ours[i], supplier[j]))
 
-    # Informational only: the date range actually present in our file. Every
-    # unmatched/mismatched row is still reported regardless of its date -
-    # nothing is ever hidden based on period. "out_of_our_range" just flags
-    # supplier rows dated outside that range, since those are commonly rows
-    # the supplier will also show on an adjacent statement (e.g. a January
-    # invoice appearing on a "Jan to date" export when we only sent May).
+    # Informational only: the date range our own file actually covers.
+    # Nothing is ever hidden based on period - "out_of_our_range" just
+    # flags supplier rows dated outside it, since a supplier's "to date"
+    # export commonly spans months we didn't send a statement for.
     def date_range(rows):
         ds = [r["date"] for r in rows if r["date"]]
         return (min(ds), max(ds)) if ds else None
@@ -150,31 +159,14 @@ def compare(ours_raw, supplier_raw):
             return False
         return not (our_range[0] <= r["date"] <= our_range[1])
 
-    issues = []
-    matched_rows = []
-    mismatches = 0
-    for i, j in matched_pairs:
-        o, s = ours[i], supplier[j]
-        if values_match(o, s):
-            matched_rows.append({
-                "date": o["date"],
-                "id": o["id"] or s["id"],
-                "description": o["description"],
-                "our_debit": o["debit"],
-                "our_credit": o["credit"],
-                "supplier_debit": s["debit"],
-                "supplier_credit": s["credit"],
-            })
-        else:
-            mismatches += 1
-            issues.append(issue("value_mismatch", o, s))
-    for i in o_unmatched:
-        issues.append(issue("missing_in_supplier", o=ours[i]))
-    for j in s_unmatched:
-        row = issue("missing_in_tahan", s=supplier[j])
-        row["out_of_our_range"] = out_of_our_range(supplier[j])
-        issues.append(row)
+    missing_in_supplier = [row_out("missing_in_supplier", o=ours[i]) for i in o_pool]
+    missing_in_tahan = []
+    for j in s_pool:
+        r = row_out("missing_in_tahan", s=supplier[j])
+        r["out_of_our_range"] = out_of_our_range(supplier[j])
+        missing_in_tahan.append(r)
 
+    issues += missing_in_supplier + missing_in_tahan
     issues.sort(key=lambda r: (r["date"], r["id"]))
     matched_rows.sort(key=lambda r: (r["date"], r["id"]))
 
@@ -183,9 +175,11 @@ def compare(ours_raw, supplier_raw):
             "our_transactions": len(ours),
             "supplier_transactions": len(supplier),
             "matched": len(matched_rows),
-            "value_mismatch": mismatches,
-            "missing_in_supplier": len(o_unmatched),
-            "missing_in_tahan": len(s_unmatched),
+            "value_mismatch": len(value_mm),
+            "date_mismatch": len(date_mm),
+            "id_mismatch": len(id_mm),
+            "missing_in_supplier": len(missing_in_supplier),
+            "missing_in_tahan": len(missing_in_tahan),
             "our_date_range": list(our_range) if our_range else None,
         },
         "issues": issues,
