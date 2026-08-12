@@ -17,6 +17,8 @@ import re
 
 import pdfplumber
 
+BUILD_TAG = "2026-08-11-v2"
+
 DATE_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
 COBR_RE = re.compile(r"^([A-Za-z]{2})(\d{2})$")
 TYPEOTL_RE = re.compile(r"^([A-Za-z]{3})(\d{2})(\S*)$")
@@ -261,7 +263,7 @@ def parse_pdf(pdf_bytes):
             if m:
                 r["id"] = m.group(1)
 
-    return {"rows": rows, "warnings": warnings, "pages": page_count}
+    return {"rows": rows, "warnings": warnings, "pages": page_count, "build_tag": BUILD_TAG}
 
 
 class handler(BaseHTTPRequestHandler):
