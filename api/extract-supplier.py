@@ -19,6 +19,8 @@ import re
 
 import pdfplumber
 
+BUILD_TAG = "2026-08-11-v2"
+
 COLUMN_KEYWORDS = {
     "date": ["date", "تاريخ", "التاريخ"],
     "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "doc",
@@ -295,22 +297,25 @@ def parse_pdf(pdf_bytes):
         t_rows, t_warn, t_found = parse_tables_strategy(pdf)
         w_rows, w_warn, w_found = parse_words_strategy(pdf)
 
-    candidates = []
-    if t_found:
-        candidates.append(("table", t_rows, t_warn))
-    if w_found:
-        candidates.append(("words", w_rows, w_warn))
-    if not candidates:
+    # Ruled-table extraction reads each printed cell directly and is immune
+    # to the column-bleed that can happen with the word-position strategy
+    # (e.g. an address like "CHTAURA-" running into the next column with no
+    # gap). Prefer it whenever the PDF actually draws table lines; only fall
+    # back to word-position matching when no ruled table is found.
+    if t_found and t_rows:
+        strategy, rows, warnings = "table", t_rows, t_warn
+    elif w_found:
+        strategy, rows, warnings = "words", w_rows, w_warn
+    else:
         raise ValueError(
             "Could not find a recognizable column header (Date/Debit/Credit/"
             "Balance or Arabic equivalents). This supplier's format needs a "
             "keyword added to COLUMN_KEYWORDS in extract-supplier.py."
         )
-    strategy, rows, warnings = max(candidates, key=lambda c: len(c[1]))
     warnings = [f"[{strategy} strategy] {w}" for w in warnings]
     if not rows:
         warnings.append(f"[{strategy} strategy] Header found but no data rows extracted.")
-    return {"rows": rows, "warnings": warnings, "pages": pages}
+    return {"rows": rows, "warnings": warnings, "pages": pages, "build_tag": BUILD_TAG}
 
 
 class handler(BaseHTTPRequestHandler):
