@@ -22,6 +22,9 @@ import re
 from datetime import datetime
 
 TOLERANCE = 0.01
+BUILD_TAG = "2026-08-11-v2"  # bump this string on every change; it is echoed
+                             # back in the API response so you can confirm
+                             # in the browser Network tab which build is live
 
 
 def norm_id(v):
@@ -172,6 +175,7 @@ def compare(ours_raw, supplier_raw):
 
     return {
         "summary": {
+            "build_tag": BUILD_TAG,
             "our_transactions": len(ours),
             "supplier_transactions": len(supplier),
             "matched": len(matched_rows),
