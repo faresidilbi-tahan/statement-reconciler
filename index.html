@@ -138,9 +138,9 @@
     </div>
     <div class="drop" id="dropSupplier">
       <h2>Supplier file</h2>
-      <p class="hint">The supplier's own statement, any format. Click or drop a PDF.</p>
+      <p class="hint">The supplier's own statement — PDF, Excel (.xlsx), or CSV, any layout. Click or drop a file.</p>
       <p class="filename" id="nameSupplier"></p>
-      <input type="file" id="fileSupplier" accept="application/pdf">
+      <input type="file" id="fileSupplier" accept="application/pdf,.pdf,.xlsx,.xls,.csv">
     </div>
   </div>
 
@@ -187,14 +187,15 @@
   var lastIssues = [];
   var lastMatched = [];
 
-  function setupDrop(zoneId, inputId, nameId, key) {
+  function setupDrop(zoneId, inputId, nameId, key, allowedExts) {
     var zone = document.getElementById(zoneId);
     var input = document.getElementById(inputId);
     var name = document.getElementById(nameId);
     function accept(file) {
       if (!file) return;
-      if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
-        setStatus('"' + file.name + '" is not a PDF.', true); return;
+      var ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (allowedExts.indexOf(ext) === -1) {
+        setStatus('"' + file.name + '" is not a supported file type (' + allowedExts.join(', ') + ').', true); return;
       }
       if (file.size > MAX_BYTES) {
         setStatus('"' + file.name + '" is over 3 MB — compress or split it first.', true); return;
@@ -372,7 +373,7 @@
         setStatus('Extracting both statements…');
         return Promise.all([
           post('/api/extract-ours', { pdf_base64: b64s[0] }),
-          post('/api/extract-supplier', { pdf_base64: b64s[1] })
+          post('/api/extract-supplier', { file_base64: b64s[1], filename: files.supplier.name })
         ]);
       })
       .then(function (results) {
@@ -441,8 +442,8 @@
     URL.revokeObjectURL(a.href);
   }
 
-  setupDrop('dropOurs', 'fileOurs', 'nameOurs', 'ours');
-  setupDrop('dropSupplier', 'fileSupplier', 'nameSupplier', 'supplier');
+  setupDrop('dropOurs', 'fileOurs', 'nameOurs', 'ours', ['pdf']);
+  setupDrop('dropSupplier', 'fileSupplier', 'nameSupplier', 'supplier', ['pdf', 'xlsx', 'xls', 'csv']);
 })();
 </script>
 </body>
