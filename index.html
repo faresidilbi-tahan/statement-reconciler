@@ -379,8 +379,13 @@
         var oursRows = filterRowsByDate(ours.rows, dateFrom, dateTo);
         var supplierRows = filterRowsByDate(supplier.rows, dateFrom, dateTo);
         var hint = document.getElementById('dateHint');
-        hint.textContent = (dateFrom || dateTo) ?
-          '(filtered: ' + oursRows.length + ' of our rows, ' + supplierRows.length + ' of supplier rows)' : '';
+        var filterPart = (dateFrom || dateTo) ?
+          'filtered: ' + oursRows.length + ' of ' + ours.rows.length + ' our rows, ' +
+          supplierRows.length + ' of ' + supplier.rows.length + ' supplier rows | ' :
+          'extracted: ' + ours.rows.length + ' our rows, ' + supplier.rows.length + ' supplier rows | ';
+        hint.textContent = '(' + filterPart +
+          'extractor builds: ours=' + (ours.build_tag || 'unknown') +
+          ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
         return post('/api/compare', { ours: oursRows, supplier: supplierRows })
           .then(function (cmp) { render(cmp, ours.warnings); });
