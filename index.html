@@ -418,7 +418,8 @@
 
   document.getElementById('diffCsvBtn').addEventListener('click', function () {
     downloadCsv(lastDiffs,
-      ['issue', 'date', 'id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
+      ['issue', 'description', 'our_date', 'supplier_date', 'our_id', 'supplier_id',
+       'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
       'differences.csv');
   });
 
