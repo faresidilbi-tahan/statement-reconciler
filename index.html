@@ -115,9 +115,7 @@
 
   .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
   .downloads button { font: inherit; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; border: 1px solid; }
-  .dl-common { color: #2e7d32; border-color: var(--line); }
-  .dl-missing { color: var(--amber); border-color: var(--line); }
-  .dl-diff { color: #5e35b1; border-color: var(--line); }
+  .dl-missing, .dl-diff, .dl-common { color: black !important; border-color: var(--line) !important; font-size: 12px !important; background: white !important;}
   .downloads button:disabled { opacity: .45; cursor: not-allowed; }
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
