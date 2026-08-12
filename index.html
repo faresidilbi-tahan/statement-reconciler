@@ -84,12 +84,11 @@
   }
   #warnings {
     display: none;
-    background: #fff8e1;
-    border: 1px solid #f0dfa0;
+    border: 1px solid var(--line);
     border-radius: 8px;
     padding: 12px 18px;
     font-size: 13px;
-    color: var(--amber);
+    color: black;
     margin-bottom: 14px;
     white-space: pre-wrap;
   }
@@ -116,9 +115,9 @@
 
   .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
   .downloads button { font: inherit; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; border: 1px solid; }
-  .dl-common { background: #e8f5e9; color: #2e7d32; border-color: #2e7d32; }
-  .dl-missing { background: #fff3e0; color: var(--amber); border-color: var(--amber); }
-  .dl-diff { background: #ede7f6; color: #5e35b1; border-color: #5e35b1; }
+  .dl-common { color: #2e7d32; border-color: var(--line); }
+  .dl-missing { color: var(--amber); border-color: var(--line); }
+  .dl-diff { color: #5e35b1; border-color: var(--line); }
   .downloads button:disabled { opacity: .45; cursor: not-allowed; }
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
