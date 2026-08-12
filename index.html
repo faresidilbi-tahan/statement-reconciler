@@ -153,6 +153,7 @@
 
   <div class="actions">
     <button id="compareBtn" disabled>Compare</button>
+    <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
 
@@ -444,6 +445,40 @@
 
   setupDrop('dropOurs', 'fileOurs', 'nameOurs', 'ours', ['pdf']);
   setupDrop('dropSupplier', 'fileSupplier', 'nameSupplier', 'supplier', ['pdf', 'xlsx', 'xls', 'csv']);
+
+  document.getElementById('clearAllBtn').addEventListener('click', function () {
+    // files + upload zones
+    files.ours = null;
+    files.supplier = null;
+    document.getElementById('fileOurs').value = '';
+    document.getElementById('fileSupplier').value = '';
+    document.getElementById('nameOurs').textContent = '';
+    document.getElementById('nameSupplier').textContent = '';
+    document.getElementById('dropOurs').classList.remove('loaded', 'dragover');
+    document.getElementById('dropSupplier').classList.remove('loaded', 'dragover');
+
+    // date filter
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
+    document.getElementById('dateHint').textContent = '';
+
+    // results
+    lastIssues = [];
+    lastMatched = [];
+    lastMissingOurs = [];
+    lastMissingSupplier = [];
+    lastDiffs = [];
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('summary').innerHTML = '';
+    document.getElementById('tableWrap').style.display = 'none';
+    document.getElementById('tbody').innerHTML = '';
+    document.getElementById('allclear').style.display = 'none';
+    document.getElementById('downloads').style.display = 'none';
+    document.getElementById('warnings').style.display = 'none';
+    document.getElementById('warnings').textContent = '';
+    setStatus('');
+    updateButton();
+  });
 })();
 </script>
 </body>
