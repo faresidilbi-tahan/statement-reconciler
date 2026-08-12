@@ -50,11 +50,11 @@
     cursor: pointer;
     transition: border-color .15s, background .15s;
   }
-  .drop:hover, .drop.dragover { border-color: var(--blue); background: #eef4fc; }
-  .drop.loaded { border-style: solid; border-color: var(--blue); }
+  .drop.dragover { border-color: var(--line); background: white; }
+  .drop.loaded { border-style: solid; border: 1px solid var(--line); }
   .drop h2 { margin: 0 0 4px; font-size: 15px; }
-  .drop .hint { font-size: 12.5px; color: var(--muted); margin: 0; }
-  .drop .filename { font-size: 13px; color: var(--blue-dark); font-weight: 600; margin-top: 8px; word-break: break-all; }
+  .drop .hint { font-size: 12.5px; color: black; margin: 0; }
+  .drop .filename { font-size: 13px; color: black; font-weight: 600; margin-top: 8px; word-break: break-all; }
   .drop input { display: none; }
 
   .actions { margin: 18px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
