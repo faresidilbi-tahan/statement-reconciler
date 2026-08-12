@@ -1,31 +1,46 @@
 """
 POST /api/extract-supplier
-Deterministic supplier-statement parser - no LLM, no external calls.
-Finds a header line with recognizable column keywords (English or Arabic),
-uses header positions as column anchors, and buckets every word into a
-column. Also runs pdfplumber's ruled-table extraction; the strategy that
-recognizes a header and yields more rows wins.
+Body: { "file_base64": "<base64>", "filename": "statement.pdf" }
+(also accepts the older key "pdf_base64" for backward compatibility)
 
-Row id priority: INV/C\\N number inside the description (this is the number
-that also appears on our statement as "Inv#"), else the reference column.
-Dates like "Jan 12, 2026" and negative-signed amounts are normalized.
+Deterministic, format-agnostic supplier-statement parser - no LLM, no
+external calls. Every supplier sends statements in their own layout and
+their own file format, so this endpoint:
+  1. sniffs the actual file type from its bytes (PDF / XLSX / CSV /
+     plain text) rather than trusting the filename or content-type,
+  2. routes to a format-specific reader that turns the file into plain
+     rows of cells,
+  3. runs the SAME column-keyword header detection and row-building
+     logic against those cells regardless of source format, so adding
+     a synonym to COLUMN_KEYWORDS improves every format at once.
+
+Row id priority: an INV/C-N number inside the description (this is the
+number that also appears on our statement as "Inv#"), else whichever
+id-like column the sheet provides (invoice number > check/voucher number
+> transaction id). Dates in "Jan 12, 2026", "12/01/2026", or native Excel
+date form are all normalized to YYYY-MM-DD.
 """
 
 from http.server import BaseHTTPRequestHandler
 import base64
+import csv
 import io
 import json
 import re
+import datetime as dt
 
 import pdfplumber
+import openpyxl
 
-BUILD_TAG = "2026-08-11-v2"
+BUILD_TAG = "2026-08-12-multiformat"
+
+# ------------------------------------------------------------ shared vocab
 
 COLUMN_KEYWORDS = {
-    "date": ["date", "تاريخ", "التاريخ"],
+    "date": ["date", "invc", "تاريخ", "التاريخ"],
     "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "doc",
-           "document", "no", "number", "num", "trx", "nb", "رقم", "سند",
-           "مستند", "فاتورة", "المرجع", "مرجع"],
+           "document", "no", "number", "num", "trx", "nb", "id", "check",
+           "chk", "cheque", "رقم", "سند", "مستند", "فاتورة", "المرجع", "مرجع"],
     "description": ["description", "details", "narration", "particulars",
                     "memo", "remarks", "بيان", "البيان", "التفاصيل",
                     "الوصف", "ملاحظات"],
@@ -33,6 +48,13 @@ COLUMN_KEYWORDS = {
     "credit": ["credit", "cr", "دائن"],
     "balance": ["balance", "رصيد", "الرصيد"],
 }
+
+# id-like columns ranked by how reliably they match OUR invoice numbers;
+# used only for spreadsheet parsing, where several id columns can coexist
+# on one row (e.g. "Trans Id", "Invoice number", "Check Num" all at once)
+ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "check", "chk", "cheque",
+                       "ref", "reference", "doc", "document", "trx", "id",
+                       "no", "number", "num", "nb"]
 
 OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "balance until",
                  "افتتاحي", "سابق", "مدور", "رصيد اول")
@@ -53,7 +75,7 @@ REF_RE = re.compile(r"(?:INV|C/N)\s*[:#]?\s*(\d{4,})", re.IGNORECASE)
 
 
 def match_column(text):
-    t = text.strip().lower().strip(":.")
+    t = str(text or "").strip().lower().strip(":.")
     for col, words in COLUMN_KEYWORDS.items():
         if t in words:
             return col
@@ -64,8 +86,18 @@ def match_column(text):
     return None
 
 
+def id_column_rank(header_text):
+    """How specific an id-like header is, for picking the best of several
+    id columns on one spreadsheet row. Lower is more trustworthy."""
+    t = str(header_text or "").strip().lower()
+    for i, kw in enumerate(ID_COLUMN_PRIORITY):
+        if kw in t:
+            return i
+    return len(ID_COLUMN_PRIORITY)
+
+
 def parse_amount(token):
-    token = token.strip()
+    token = str(token).strip()
     m = AMOUNT_RE.match(token)
     if not m:
         return None
@@ -79,6 +111,7 @@ def parse_amount(token):
 
 def find_date(text):
     """Search a cell for a date in 'Jan 12, 2026' or numeric form -> ISO."""
+    text = str(text or "")
     m = MONTH_DATE_RE.search(text)
     if m:
         mo = MONTHS[m.group(1).lower()[:3]]
@@ -100,10 +133,10 @@ def find_date(text):
 
 
 def extract_row_id(id_cell, description):
-    m = REF_RE.search(description)
+    m = REF_RE.search(str(description or ""))
     if m:
         return m.group(1)
-    for tok in id_cell.split():
+    for tok in str(id_cell or "").split():
         if re.search(r"\d", tok) and not find_date(tok):
             return tok
     return ""
@@ -111,9 +144,9 @@ def extract_row_id(id_cell, description):
 
 def build_row(cells, raw_low):
     date = find_date(cells.get("date", "")) or ""
-    debit = parse_amount(cells.get("debit", ""))
-    credit = parse_amount(cells.get("credit", ""))
-    balance = parse_amount(cells.get("balance", ""))
+    debit = parse_amount(cells.get("debit", "")) if cells.get("debit", "") != "" else None
+    credit = parse_amount(cells.get("credit", "")) if cells.get("credit", "") != "" else None
+    balance = parse_amount(cells.get("balance", "")) if cells.get("balance", "") != "" else None
 
     if any(k in raw_low for k in OPENING_WORDS):
         row_type = "opening_balance"
@@ -129,7 +162,7 @@ def build_row(cells, raw_low):
         "date": date,
         "id": extract_row_id(cells.get("id", ""), desc) if row_type == "transaction" else "",
         "description": desc,
-        # sign is presentation (this supplier prints credits negative)
+        # sign is presentation-only (some suppliers print credits negative)
         "debit": abs(debit) if debit is not None else 0.0,
         "credit": abs(credit) if credit is not None else 0.0,
         "balance": balance if balance is not None else 0.0,
@@ -140,12 +173,12 @@ def build_row(cells, raw_low):
 def is_continuation(cells):
     if find_date(cells.get("date", "")):
         return False
-    if any(parse_amount(cells.get(c, "")) is not None for c in ("debit", "credit", "balance")):
+    if any(parse_amount(cells.get(c, "")) is not None for c in ("debit", "credit", "balance") if cells.get(c, "") != ""):
         return False
     return bool(cells.get("description") or cells.get("id"))
 
 
-# ------------------------------------------------------------ word strategy
+# ================================================================== PDF
 
 def group_lines(page):
     words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0, keep_blank_chars=False)
@@ -241,8 +274,6 @@ def parse_words_strategy(pdf):
     return rows, warnings, anchors is not None
 
 
-# ------------------------------------------------------------ table strategy
-
 def parse_tables_strategy(pdf):
     rows, warnings = [], []
     col_map = None
@@ -285,8 +316,8 @@ def parse_tables_strategy(pdf):
     return rows, warnings, found_any
 
 
-def parse_pdf(pdf_bytes):
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+def parse_pdf(file_bytes):
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         pages = len(pdf.pages)
         total_chars = sum(len(p.chars) for p in pdf.pages)
         if total_chars < 20:
@@ -309,13 +340,212 @@ def parse_pdf(pdf_bytes):
     else:
         raise ValueError(
             "Could not find a recognizable column header (Date/Debit/Credit/"
-            "Balance or Arabic equivalents). This supplier's format needs a "
-            "keyword added to COLUMN_KEYWORDS in extract-supplier.py."
+            "Balance or Arabic equivalents) in this PDF. This supplier's "
+            "format needs a keyword added to COLUMN_KEYWORDS."
         )
-    warnings = [f"[{strategy} strategy] {w}" for w in warnings]
+    warnings = [f"[pdf/{strategy}] {w}" for w in warnings]
     if not rows:
-        warnings.append(f"[{strategy} strategy] Header found but no data rows extracted.")
-    return {"rows": rows, "warnings": warnings, "pages": pages, "build_tag": BUILD_TAG}
+        warnings.append(f"[pdf/{strategy}] Header found but no data rows extracted.")
+    return rows, warnings, {"pages": pages}
+
+
+# ================================================================== XLSX
+
+def cell_to_text(v):
+    """Excel cells already carry typed values (dates, numbers) - normalize
+    everything to the string form the shared header/amount matchers expect,
+    except dates which are converted straight to ISO to avoid ambiguity."""
+    if v is None:
+        return ""
+    if isinstance(v, (dt.datetime, dt.date)):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def map_sheet_header(header_row):
+    """Map each column index to a field name. Unlike the PDF path, a
+    spreadsheet can have several id-like columns on one row (Trans Id,
+    Invoice number, Check Num); keep all of them ranked so build_sheet_row
+    can pick the most specific one actually populated on each row, instead
+    of only keeping whichever appeared first."""
+    mapped = {}       # field -> single column index (date/description/debit/credit/balance)
+    id_candidates = []  # list of (rank, column index) for every id-like header
+    for idx, cell in enumerate(header_row):
+        col = match_column(cell)
+        if col == "id":
+            id_candidates.append((id_column_rank(cell), idx))
+        elif col and col not in mapped:
+            mapped[col] = idx
+    id_candidates.sort()
+    return mapped, id_candidates
+
+
+def build_sheet_row(row_values, mapped, id_candidates):
+    def get(field):
+        i = mapped.get(field, -1)
+        return cell_to_text(row_values[i]) if 0 <= i < len(row_values) else ""
+
+    cells = {f: get(f) for f in ("date", "description", "debit", "credit", "balance")}
+    # pick the first (highest-priority) id column that actually has a value
+    # on this specific row, since e.g. "Check Num" is usually blank except
+    # on cheque rows while "Invoice number" is blank on those same rows
+    id_text = ""
+    for _, idx in id_candidates:
+        if idx < len(row_values):
+            v = cell_to_text(row_values[idx])
+            if v:
+                id_text = v
+                break
+    cells["id"] = id_text
+
+    raw_low = " ".join(cell_to_text(v) for v in row_values if v is not None).lower()
+    return build_row(cells, raw_low), cells
+
+
+def parse_xlsx(file_bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    rows, warnings = [], []
+    sheets_used = 0
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        all_rows = list(ws.iter_rows(values_only=True))
+        if not all_rows:
+            continue
+
+        header_idx, mapped, id_candidates = None, None, None
+        for i, r in enumerate(all_rows[:5]):
+            m, ids = map_sheet_header(r)
+            if len(m) + (1 if ids else 0) >= 3 and any(c in m for c in ("debit", "credit", "balance")):
+                header_idx, mapped, id_candidates = i, m, ids
+                break
+        if header_idx is None:
+            continue  # this sheet doesn't look like a ledger - skip quietly
+
+        sheets_used += 1
+        prev_row_ref = None
+        for r in all_rows[header_idx + 1:]:
+            if r is None or all(v is None for v in r):
+                continue
+            row, cells = build_sheet_row(r, mapped, id_candidates)
+            if row:
+                rows.append(row)
+                prev_row_ref = rows[-1]
+            elif prev_row_ref is not None and is_continuation(cells):
+                extra = (cells.get("description", "") + " " + cells.get("id", "")).strip()
+                if extra:
+                    prev_row_ref["description"] = (prev_row_ref["description"] + " " + extra).strip()
+
+    if sheets_used == 0:
+        raise ValueError(
+            "Could not find a recognizable column header (Date/Debit/Credit/"
+            "Balance or similar) in any sheet of this workbook. This "
+            "supplier's format needs a keyword added to COLUMN_KEYWORDS."
+        )
+    if not rows:
+        warnings.append("[xlsx] Header(s) found but no data rows extracted.")
+    return rows, warnings, {"sheets": len(wb.sheetnames), "sheets_used": sheets_used}
+
+
+# ================================================================== CSV
+
+def parse_csv(file_bytes):
+    text = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1256", "latin-1"):
+        try:
+            text = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        raise ValueError("Could not decode this CSV file as text.")
+
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = list(csv.reader(io.StringIO(text), dialect))
+    reader = [r for r in reader if any(c.strip() for c in r)]
+    if not reader:
+        raise ValueError("This CSV file has no rows.")
+
+    header_idx, mapped, id_candidates = None, None, None
+    for i, r in enumerate(reader[:5]):
+        m, ids = map_sheet_header(r)
+        if len(m) + (1 if ids else 0) >= 3 and any(c in m for c in ("debit", "credit", "balance")):
+            header_idx, mapped, id_candidates = i, m, ids
+            break
+    if header_idx is None:
+        raise ValueError(
+            "Could not find a recognizable column header (Date/Debit/Credit/"
+            "Balance or similar) in this CSV. This supplier's format needs "
+            "a keyword added to COLUMN_KEYWORDS."
+        )
+
+    rows, warnings = [], []
+    prev_row_ref = None
+    for r in reader[header_idx + 1:]:
+        row, cells = build_sheet_row(r, mapped, id_candidates)
+        if row:
+            rows.append(row)
+            prev_row_ref = rows[-1]
+        elif prev_row_ref is not None and is_continuation(cells):
+            extra = (cells.get("description", "") + " " + cells.get("id", "")).strip()
+            if extra:
+                prev_row_ref["description"] = (prev_row_ref["description"] + " " + extra).strip()
+
+    if not rows:
+        warnings.append("[csv] Header found but no data rows extracted.")
+    return rows, warnings, {}
+
+
+# ================================================================== dispatch
+
+def sniff_format(file_bytes, filename):
+    """Identify the real file format from its bytes first (magic numbers
+    can't be spoofed by a wrong extension), falling back to the filename
+    extension only when the bytes are inconclusive (plain text formats)."""
+    if file_bytes.startswith(b"%PDF"):
+        return "pdf"
+    if file_bytes.startswith(b"PK\x03\x04"):
+        return "xlsx"     # xlsx/xlsm are zip containers
+    if file_bytes.startswith(b"\xd0\xcf\x11\xe0"):
+        raise ValueError(
+            "This looks like a legacy .xls file (pre-2007 Excel format). "
+            "Please re-save it as .xlsx or .csv and upload again."
+        )
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if filename else ""
+    if ext in ("csv", "tsv", "txt"):
+        return "csv"
+    if ext in ("xlsx", "xlsm"):
+        return "xlsx"
+    if ext == "pdf":
+        return "pdf"
+    # last resort: does it decode as text at all?
+    try:
+        file_bytes[:2048].decode("utf-8")
+        return "csv"
+    except UnicodeDecodeError:
+        raise ValueError(
+            "Could not identify this file's format. Supported formats: "
+            "PDF, Excel (.xlsx), and CSV."
+        )
+
+
+def parse_supplier_file(file_bytes, filename=None):
+    fmt = sniff_format(file_bytes, filename)
+    if fmt == "pdf":
+        rows, warnings, meta = parse_pdf(file_bytes)
+    elif fmt == "xlsx":
+        rows, warnings, meta = parse_xlsx(file_bytes)
+    else:
+        rows, warnings, meta = parse_csv(file_bytes)
+    result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG, "format": fmt}
+    result.update(meta)
+    return result
 
 
 class handler(BaseHTTPRequestHandler):
@@ -331,13 +561,14 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
-            b64 = data.get("pdf_base64", "")
+            b64 = data.get("file_base64") or data.get("pdf_base64", "")
+            filename = data.get("filename", "")
             if "," in b64[:80]:
                 b64 = b64.split(",", 1)[1]
-            pdf_bytes = base64.b64decode(b64)
-            if not pdf_bytes.startswith(b"%PDF"):
-                return self._send(400, {"error": "File does not look like a PDF."})
-            self._send(200, parse_pdf(pdf_bytes))
+            if not b64:
+                return self._send(400, {"error": "file_base64 is required."})
+            file_bytes = base64.b64decode(b64)
+            self._send(200, parse_supplier_file(file_bytes, filename))
         except json.JSONDecodeError:
             self._send(400, {"error": "Invalid JSON body."})
         except ValueError as e:
