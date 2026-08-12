@@ -292,7 +292,8 @@
       s.missing_in_tahan + ' missing from our file, ' +
       s.missing_in_supplier + ' missing from supplier</strong>' +
       ' — ' + s.our_transactions + ' of our transactions vs ' + s.supplier_transactions + ' supplier rows.' +
-      (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '');
+      (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '') +
+      ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>';
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
