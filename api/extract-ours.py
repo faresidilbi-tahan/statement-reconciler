@@ -21,10 +21,10 @@ BUILD_TAG = "2026-08-11-v2"
 
 DATE_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
 COBR_RE = re.compile(r"^([A-Za-z]{2})(\d{2})$")
-TYPEOTL_RE = re.compile(r"^([A-Za-z]{3})(\d{2})(\S*)$")
+TYPEOTL_RE = re.compile(r"^([A-Za-z]{3})(\d{1,3})(\S*)$")
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
 PURE_DIGITS_RE = re.compile(r"^[\d\s./,\-]+$")
-INV_ID_RE = re.compile(r"inv\s*#\s*(\d{4,})", re.IGNORECASE)
+INV_ID_RE = re.compile(r"inv\s*#\s*(\d+)", re.IGNORECASE)
 
 OPENING_WORDS = ("opening", "balance until", "b/f", "brought")
 CLOSING_WORDS = ("closing", "balance as at", "c/f", "carried")
@@ -208,6 +208,34 @@ def parse_pdf(pdf_bytes):
                 rest_tokens = [w["text"].strip() for w in rest if w["text"].strip()]
                 rest_text = " ".join(rest_tokens)
 
+                # Try parsing as a normal transaction FIRST. Only treat a line
+                # as an opening/closing balance marker if it does NOT parse as
+                # a transaction - otherwise a real transaction whose free-text
+                # description happens to mention "opening balance" (e.g. a
+                # payment memo referencing an opening-balance settlement)
+                # would be wrongly excluded from matching.
+                parsed = parse_leading_fields(rest_tokens)
+                if parsed:
+                    fields, desc_tokens = parsed
+                    rows.append({
+                        "date": fields["date"],
+                        "id": fields["vchno"],
+                        "description": " ".join(desc_tokens).strip(),
+                        "debit": amounts.get("debit", 0.0) or 0.0,
+                        "credit": amounts.get("credit", 0.0) or 0.0,
+                        "balance": amounts.get("balance", 0.0) or 0.0,
+                        "row_type": "transaction",
+                        "_meta": {"co": fields["co"], "br": fields["br"],
+                                  "type": fields["type"], "otl": fields["otl"],
+                                  "vchno": fields["vchno"], "balance_side": suffix},
+                    })
+                    prev_was_data = True
+                    continue
+
+                # Fell through: not a parseable transaction line. If it
+                # mentions opening/closing balance, treat it as that special
+                # summary row (these lack normal Co/Br/Type/VCHNO fields
+                # entirely, e.g. "Balance Until 01/01/2026 ........").
                 if any(k in low for k in OPENING_WORDS) or any(k in low for k in CLOSING_WORDS):
                     row_type = "opening_balance" if any(k in low for k in OPENING_WORDS) else "closing_balance"
                     date = next((normalize_date(t) for t in rest_tokens if normalize_date(t)), None)
@@ -226,24 +254,6 @@ def parse_pdf(pdf_bytes):
                         "credit": amounts.get("credit", 0.0) or 0.0,
                         "balance": balance if balance is not None else 0.0,
                         "row_type": row_type,
-                    })
-                    prev_was_data = True
-                    continue
-
-                parsed = parse_leading_fields(rest_tokens)
-                if parsed:
-                    fields, desc_tokens = parsed
-                    rows.append({
-                        "date": fields["date"],
-                        "id": fields["vchno"],
-                        "description": " ".join(desc_tokens).strip(),
-                        "debit": amounts.get("debit", 0.0) or 0.0,
-                        "credit": amounts.get("credit", 0.0) or 0.0,
-                        "balance": amounts.get("balance", 0.0) or 0.0,
-                        "row_type": "transaction",
-                        "_meta": {"co": fields["co"], "br": fields["br"],
-                                  "type": fields["type"], "otl": fields["otl"],
-                                  "vchno": fields["vchno"], "balance_side": suffix},
                     })
                     prev_was_data = True
                     continue
