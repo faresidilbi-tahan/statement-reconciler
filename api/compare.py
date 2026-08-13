@@ -3,14 +3,16 @@ POST /api/compare
 Body: { "ours": [rows], "supplier": [rows] }   (row schema from the extractors)
 
 Matching, plain code, no LLM. A transaction is identified by three fields:
-id (normalized), date, amount (magnitude, side-independent). Matching runs
-in priority order:
-  1. all three agree                          -> common (clean match)
-  2. id + date agree, amount differs           -> value_mismatch
-  3. id + amount agree, date differs           -> date_mismatch
-  4. date + amount agree, id differs           -> id_mismatch
-  5. left over on our side                     -> missing_in_supplier
-  6. left over on supplier side                -> missing_in_tahan
+id (normalized), date, amount. Amounts are compared with a tolerance (see
+AMOUNT_TOLERANCE below) rather than exact equality, since suppliers commonly
+round VAT/totals a cent or two differently than we do for the same invoice.
+Matching runs in priority order:
+  1. id + date agree, amount within tolerance    -> common (clean match)
+  2. id + date agree, amount differs by more      -> value_mismatch
+  3. id + amount (within tolerance) agree, date differs -> date_mismatch
+  4. date + amount (within tolerance) agree, id differs -> id_mismatch
+  5. left over on our side                        -> missing_in_supplier
+  6. left over on supplier side                    -> missing_in_tahan
 Each step only consumes rows not already matched by an earlier, stricter
 step, and each row is used at most once. Opening/closing balance rows are
 excluded from matching entirely.
@@ -21,10 +23,15 @@ import json
 import re
 from datetime import datetime
 
-TOLERANCE = 0.01
-BUILD_TAG = "2026-08-11-v2"  # bump this string on every change; it is echoed
-                             # back in the API response so you can confirm
-                             # in the browser Network tab which build is live
+# Amounts within this many dollars/cents of each other count as "the same"
+# for matching purposes. Suppliers frequently round a total a cent or two
+# differently than we do for the exact same invoice (e.g. 1450.99 vs
+# 1451.00) - those are not real discrepancies worth flagging.
+AMOUNT_TOLERANCE = 1.00
+BUILD_TAG = "2026-08-13-tolerance"  # bump this string on every change; it is
+                             # echoed back in the API response so you can
+                             # confirm in the browser Network tab which
+                             # build is live
 
 
 def norm_id(v):
@@ -71,7 +78,7 @@ def clean(rows):
     for r in rows or []:
         debit = num(r.get("debit"))
         credit = num(r.get("credit"))
-        amt = round(debit if debit > TOLERANCE else credit, 2)
+        amt = round(debit if debit > 0.01 else credit, 2)
         out.append({
             "date": norm_date(r.get("date")),
             "id": str(r.get("id") or ""),
@@ -85,10 +92,16 @@ def clean(rows):
     return [r for r in out if r["row_type"] == "transaction"]
 
 
-def match_by_keys(ours, supplier, ours_pool, supplier_pool, keys):
-    """Greedily pair remaining rows that agree on every field in `keys`
-    (all must be non-empty on both sides to count). Returns matched pairs
-    plus the two leftover pools."""
+def amounts_close(a, b):
+    return abs(a - b) <= AMOUNT_TOLERANCE + 1e-9
+
+
+def match_exact_key(ours, supplier, ours_pool, supplier_pool, keys):
+    """Greedily pair remaining rows that agree EXACTLY on every field in
+    `keys` (all must be non-empty on both sides to count). Used only for
+    key fields that need exact equality (id, date) - amount matching is
+    always tolerance-based and handled separately by the tolerant matchers
+    below, since a hash-map lookup can't do fuzzy numeric comparison."""
     sup_map = {}
     for j in supplier_pool:
         vals = tuple(supplier[j][k] for k in keys)
@@ -102,6 +115,39 @@ def match_by_keys(ours, supplier, ours_pool, supplier_pool, keys):
         bucket = sup_map.get(vals) if not any(v in ("", None) for v in vals) else None
         if bucket:
             pairs.append((i, bucket.pop(0)))
+        else:
+            leftover_ours.append(i)
+
+    matched_j = {j for _, j in pairs}
+    leftover_supplier = [j for j in supplier_pool if j not in matched_j]
+    return pairs, leftover_ours, leftover_supplier
+
+
+def match_exact_plus_tolerant_amount(ours, supplier, ours_pool, supplier_pool, exact_key):
+    """Pair rows that agree exactly on `exact_key` (a single field: 'nid'
+    or 'date') AND have amounts within AMOUNT_TOLERANCE of each other.
+    Groups the smaller side by the exact key first so this stays fast even
+    with hundreds of rows, then does a short linear scan within each group
+    for the tolerant amount check."""
+    sup_by_key = {}
+    for j in supplier_pool:
+        k = supplier[j][exact_key]
+        if not k:
+            continue
+        sup_by_key.setdefault(k, []).append(j)
+
+    pairs, leftover_ours = [], []
+    for i in ours_pool:
+        k = ours[i][exact_key]
+        candidates = sup_by_key.get(k, []) if k else []
+        found_idx = None
+        for idx, j in enumerate(candidates):
+            if amounts_close(ours[i]["amt"], supplier[j]["amt"]):
+                found_idx = idx
+                break
+        if found_idx is not None:
+            j = candidates.pop(found_idx)
+            pairs.append((i, j))
         else:
             leftover_ours.append(i)
 
@@ -147,10 +193,21 @@ def compare(ours_raw, supplier_raw):
     o_pool = list(range(len(ours)))
     s_pool = list(range(len(supplier)))
 
-    exact, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "date", "amt"))
-    value_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "date"))
-    date_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("nid", "amt"))
-    id_mm, o_pool, s_pool = match_by_keys(ours, supplier, o_pool, s_pool, ("date", "amt"))
+    # Step 1: same id + same date. Split by whether the amount is within
+    # tolerance (clean match) or not (a real value mismatch worth flagging).
+    id_date_pairs, o_pool, s_pool = match_exact_key(ours, supplier, o_pool, s_pool, ("nid", "date"))
+    exact, value_mm = [], []
+    for i, j in id_date_pairs:
+        if amounts_close(ours[i]["amt"], supplier[j]["amt"]):
+            exact.append((i, j))
+        else:
+            value_mm.append((i, j))
+
+    # Step 2: same id, amount within tolerance, date differs.
+    date_mm, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "nid")
+
+    # Step 3: same date, amount within tolerance, id differs.
+    id_mm, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "date")
 
     matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact]
     issues = []
