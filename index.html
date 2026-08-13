@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Statement Reconciliation — Abed Tahan</title>
 <style>
-  .actions button {
-    font-size: 12px;
-}
   header img {
     width: 150px;
     margin-bottom: -15px !important;
@@ -53,11 +50,11 @@
     cursor: pointer;
     transition: border-color .15s, background .15s;
   }
-  .drop.dragover { border-color: var(--line); background: white; }
-  .drop.loaded { border-style: solid; border: 1px solid var(--line); }
+  .drop:hover, .drop.dragover { border-color: var(--blue); background: #eef4fc; }
+  .drop.loaded { border-style: solid; border-color: var(--blue); }
   .drop h2 { margin: 0 0 4px; font-size: 15px; }
-  .drop .hint { font-size: 12.5px; color: black; margin: 0; }
-  .drop .filename { font-size: 13px; color: black; font-weight: 600; margin-top: 8px; word-break: break-all; }
+  .drop .hint { font-size: 12.5px; color: var(--muted); margin: 0; }
+  .drop .filename { font-size: 13px; color: var(--blue-dark); font-weight: 600; margin-top: 8px; word-break: break-all; }
   .drop input { display: none; }
 
   .actions { margin: 18px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -361,6 +358,11 @@
 
   document.getElementById('compareBtn').addEventListener('click', function () {
     var btn = this;
+    if (!files.ours || !files.supplier) {
+      setStatus('Please re-select both files before comparing.', true);
+      updateButton();
+      return;
+    }
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
@@ -374,6 +376,9 @@
 
     Promise.all([toBase64(files.ours), toBase64(files.supplier)])
       .then(function (b64s) {
+        if (!b64s[0] || !b64s[1]) {
+          throw new Error('One of the files could not be read - please re-select it and try again.');
+        }
         setStatus('Extracting both statements…');
         return Promise.all([
           post('/api/extract-ours', { pdf_base64: b64s[0] }),
