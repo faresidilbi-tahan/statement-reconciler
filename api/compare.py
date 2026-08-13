@@ -28,8 +28,18 @@ BUILD_TAG = "2026-08-11-v2"  # bump this string on every change; it is echoed
 
 
 def norm_id(v):
-    s = re.sub(r"\s+", "", str(v or "")).lower()
-    return s.lstrip("0")
+    """Normalize an id for matching. Suppliers commonly prefix their own
+    reference with a document-type code ('1/249', 'INV-249', 'CN#295068'),
+    so the whole string rarely matches ours verbatim even when it's really
+    the same invoice number. Extract the longest run of digits instead -
+    that's reliably the actual invoice/voucher number in every format
+    we've seen, regardless of what prefix or separator surrounds it."""
+    s = str(v or "")
+    digit_runs = re.findall(r"\d+", s)
+    if not digit_runs:
+        return ""
+    best = max(digit_runs, key=len)
+    return best.lstrip("0")
 
 
 def norm_date(v):
