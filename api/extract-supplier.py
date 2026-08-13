@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-12-multiformat"
+BUILD_TAG = "2026-08-13-vat-merge"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -109,6 +109,33 @@ def parse_amount(token):
         return None
 
 
+# Per-document date convention ('DMY' or 'MDY'), detected once per parsed
+# file from unambiguous dates it contains (see detect_date_convention).
+# Only used for the numeric-slash date form when both parts could be either
+# a day or a month (e.g. "4/1/2026") - a date like "28/05/2026" or
+# "5/15/2026" is unambiguous regardless of this setting, since one of the
+# two numbers can't possibly be a month.
+_DATE_CONVENTION = "DMY"
+
+
+def detect_date_convention(text):
+    """Scan a document's full text for numeric dates and infer whether it
+    uses day-first or month-first ordering, based on any date where one of
+    the first two numbers exceeds 12 (which can only be a day, never a
+    month). Defaults to day-first (our own convention) when the document
+    has no unambiguous evidence either way."""
+    dmy_evidence = mdy_evidence = 0
+    for m in NUM_DATE_RE.finditer(text):
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > 31 or b > 31:
+            continue  # not a plausible day/month pair at all (likely a year-first date)
+        if a > 12 and b <= 12:
+            dmy_evidence += 1
+        elif b > 12 and a <= 12:
+            mdy_evidence += 1
+    return "MDY" if mdy_evidence > dmy_evidence else "DMY"
+
+
 def find_date(text):
     """Search a cell for a date in 'Jan 12, 2026' or numeric form -> ISO."""
     text = str(text or "")
@@ -123,10 +150,16 @@ def find_date(text):
         a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if a > 31:
             y, mo, d = a, b, c
+        elif a > 12 and b <= 12:
+            d, mo, y = a, b, c            # unambiguous: a can't be a month
+        elif b > 12 and a <= 12:
+            mo, d, y = a, b, c            # unambiguous: b can't be a month
+        elif _DATE_CONVENTION == "MDY":
+            mo, d, y = a, b, c
         else:
             d, mo, y = a, b, c
-            if y < 100:
-                y += 2000
+        if y < 100:
+            y += 2000
         if 1 <= d <= 31 and 1 <= mo <= 12 and 1900 < y < 2100:
             return f"{y:04d}-{mo:02d}-{d:02d}"
     return None
@@ -274,27 +307,99 @@ def parse_words_strategy(pdf):
     return rows, warnings, anchors is not None
 
 
+def find_external_header_mapping(page, table):
+    """When a table has no header row of its own (some invoicing systems
+    print the column labels as free text directly above the ruled grid,
+    outside the table pdfplumber detects), look for that header line
+    among the words sitting above the table's top edge, and map each
+    matched keyword to whichever of the table's own column x-ranges it
+    falls inside. Returns a {field: column_index} dict, or None."""
+    if not table.rows:
+        return None
+    first_row_cells = table.rows[0].cells
+    if not first_row_cells or any(c is None for c in first_row_cells):
+        return None
+    col_ranges = [(c[0], c[2]) for c in first_row_cells]  # (x0, x1) per column
+
+    top_of_table = table.bbox[1]
+    words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0, keep_blank_chars=False)
+    candidates = [w for w in words if top_of_table - 80 <= w["top"] < top_of_table]
+    candidates.sort(key=lambda w: w["top"])
+
+    lines, cur, cur_top = [], [], None
+    for w in candidates:
+        if cur_top is None or abs(w["top"] - cur_top) <= 2.5:
+            cur.append(w)
+            cur_top = w["top"] if cur_top is None else cur_top
+        else:
+            lines.append(cur)
+            cur, cur_top = [w], w["top"]
+    if cur:
+        lines.append(cur)
+
+    best_map, best_count = None, 0
+    for line in lines:
+        mapping = {}
+        for w in line:
+            col = match_column(w["text"])
+            if not col:
+                continue
+            wx = (w["x0"] + w["x1"]) / 2
+            for idx, (x0, x1) in enumerate(col_ranges):
+                if x0 <= wx < x1:
+                    if col not in mapping:
+                        mapping[col] = idx
+                    break
+        if len(mapping) > best_count and len(mapping) >= 3 and any(c in mapping for c in ("debit", "credit", "balance")):
+            best_map, best_count = mapping, len(mapping)
+    return best_map
+
+
 def parse_tables_strategy(pdf):
     rows, warnings = [], []
-    col_map = None
     found_any = False
+    last_col_map, last_col_count = None, None
     for page in pdf.pages:
-        for table in page.extract_tables():
-            prev_was_data = False
-            for cells in table:
-                cells = [(c or "").replace("\n", " ").strip() for c in cells]
+        for table in page.find_tables():
+            table_rows = table.extract()
+            if not table_rows:
+                continue
+            this_col_count = len(table_rows[0]) if table_rows[0] else 0
+
+            col_map, data_rows = None, table_rows
+            # first choice: a header row printed inside the table itself
+            for i, cells in enumerate(table_rows[:10]):
+                cells_norm = [(c or "").replace("\n", " ").strip() for c in cells]
                 mapped = {}
-                for idx, c in enumerate(cells):
+                for idx, c in enumerate(cells_norm):
                     col = match_column(c)
                     if col and col not in mapped:
                         mapped[col] = idx
                 if len(mapped) >= 3 and any(c in mapped for c in ("debit", "credit", "balance")):
-                    col_map = mapped
-                    found_any = True
-                    prev_was_data = False
-                    continue
-                if not col_map:
-                    continue
+                    col_map, data_rows = mapped, table_rows[i + 1:]
+                    break
+            # second choice: header printed as free text above the ruled grid
+            if col_map is None:
+                col_map = find_external_header_mapping(page, table)
+                data_rows = table_rows  # every extracted row is data in this case
+            # third choice: a later page of the same multi-page statement,
+            # where the header (in either form above) was only printed once
+            # on page 1 and doesn't repeat - reuse the last mapping as long
+            # as this table has the same number of columns, since a
+            # differently-shaped table is almost certainly something else
+            # (e.g. an address block) and applying a stale map to it would
+            # silently produce garbage rows.
+            if col_map is None and last_col_map is not None and this_col_count == last_col_count:
+                col_map = last_col_map
+                data_rows = table_rows
+            if col_map is None:
+                continue
+
+            last_col_map, last_col_count = col_map, this_col_count
+            found_any = True
+            prev_was_data = False
+            for cells in data_rows:
+                cells = [(c or "").replace("\n", " ").strip() for c in cells]
 
                 def get(field):
                     i = col_map.get(field, -1)
@@ -317,6 +422,7 @@ def parse_tables_strategy(pdf):
 
 
 def parse_pdf(file_bytes):
+    global _DATE_CONVENTION
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         pages = len(pdf.pages)
         total_chars = sum(len(p.chars) for p in pdf.pages)
@@ -325,6 +431,9 @@ def parse_pdf(file_bytes):
                 "This PDF has no text layer (it is a scan/image). "
                 "It needs OCR before it can be parsed without an LLM."
             )
+        full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        _DATE_CONVENTION = detect_date_convention(full_text)
+
         t_rows, t_warn, t_found = parse_tables_strategy(pdf)
         w_rows, w_warn, w_found = parse_words_strategy(pdf)
 
@@ -452,6 +561,7 @@ def parse_xlsx(file_bytes):
 # ================================================================== CSV
 
 def parse_csv(file_bytes):
+    global _DATE_CONVENTION
     text = None
     for encoding in ("utf-8-sig", "utf-8", "cp1256", "latin-1"):
         try:
@@ -461,6 +571,7 @@ def parse_csv(file_bytes):
             continue
     if text is None:
         raise ValueError("Could not decode this CSV file as text.")
+    _DATE_CONVENTION = detect_date_convention(text)
 
     sample = text[:4096]
     try:
@@ -535,6 +646,92 @@ def sniff_format(file_bytes, filename):
         )
 
 
+VAT_SUFFIX_RE = re.compile(r"(-v|vat)\s*$", re.IGNORECASE)
+
+
+def _longest_digit_run(s):
+    runs = re.findall(r"\d+", str(s or ""))
+    return max(runs, key=len).lstrip("0") if runs else ""
+
+
+def merge_split_vat_lines(rows):
+    """Some suppliers print a transaction's tax as a separate line instead
+    of combining it into one total the way we do - either right after the
+    base line, or (as seen in practice) in a completely separate block
+    later in the same document. Fold any such VAT-marked line into the
+    base row sharing its date and normalized id, wherever in the document
+    each one appears, so the combined total can match our single figure.
+    """
+    # Pass 1: pull out every VAT-marked row (order-independent) and
+    # accumulate its amount per (date, normalized id) key.
+    base_rows, vat_totals = [], {}
+    for r in rows:
+        if r["row_type"] != "transaction":
+            base_rows.append(r)
+            continue
+        nid = _longest_digit_run(r["id"])
+        is_vat = nid and (VAT_SUFFIX_RE.search(r["id"].strip())
+                          or VAT_SUFFIX_RE.search(r["description"].strip()))
+        if is_vat:
+            key = (r["date"], nid)
+            e = vat_totals.setdefault(key, {"debit": 0.0, "credit": 0.0, "id": ""})
+            e["debit"] += r["debit"]
+            e["credit"] += r["credit"]
+            if len(r["id"]) > len(e["id"]):
+                e["id"] = r["id"]
+        else:
+            base_rows.append(r)
+
+    applied = set()
+    with_vat_applied = []
+    for r in base_rows:
+        if r.get("row_type") == "transaction":
+            key = (r["date"], _longest_digit_run(r["id"]))
+            if key[1] and key in vat_totals and key not in applied:
+                e = vat_totals[key]
+                r = dict(r)
+                r["debit"] += e["debit"]
+                r["credit"] += e["credit"]
+                if len(e["id"]) > len(r["id"]):
+                    r["id"] = e["id"]
+                applied.add(key)
+        with_vat_applied.append(r)
+    # a VAT line whose base row was never found (id mismatch, or the base
+    # row landed outside this file's date filter) - keep it rather than
+    # silently dropping the amount.
+    for key, e in vat_totals.items():
+        if key not in applied:
+            with_vat_applied.append({
+                "date": key[0], "id": e["id"], "description": "(VAT line, no matching base row found)",
+                "debit": e["debit"], "credit": e["credit"], "balance": 0.0, "row_type": "transaction",
+            })
+
+    # Pass 2: some suppliers instead print two ADJACENT lines that both
+    # carry the identical full description (no distinct VAT marker) -
+    # merge those too, same guard against unrelated same-id batches with
+    # differing descriptions.
+    merged = []
+    for r in with_vat_applied:
+        prev = merged[-1] if merged else None
+        same_group = (
+            prev is not None
+            and r.get("row_type") == "transaction" == prev.get("row_type")
+            and r["date"] == prev["date"]
+            and r["description"].strip() != ""
+            and r["description"].strip() == prev["description"].strip()
+            and _longest_digit_run(r["id"]) == _longest_digit_run(prev["id"])
+            and _longest_digit_run(r["id"]) != ""
+        )
+        if same_group:
+            prev["debit"] += r["debit"]
+            prev["credit"] += r["credit"]
+            if len(r["id"]) > len(prev["id"]):
+                prev["id"] = r["id"]
+        else:
+            merged.append(dict(r))
+    return merged
+
+
 def parse_supplier_file(file_bytes, filename=None):
     fmt = sniff_format(file_bytes, filename)
     if fmt == "pdf":
@@ -543,6 +740,7 @@ def parse_supplier_file(file_bytes, filename=None):
         rows, warnings, meta = parse_xlsx(file_bytes)
     else:
         rows, warnings, meta = parse_csv(file_bytes)
+    rows = merge_split_vat_lines(rows)
     result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG, "format": fmt}
     result.update(meta)
     return result
