@@ -28,7 +28,7 @@ from datetime import datetime
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-13-tolerance"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-14-zero-value"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -89,7 +89,13 @@ def clean(rows):
             "amt": amt,
             "row_type": r.get("row_type", "transaction"),
         })
-    return [r for r in out if r["row_type"] == "transaction"]
+    # A transaction with $0 on both debit and credit has no monetary
+    # substance to reconcile - suppliers and our own ledger both sometimes
+    # post these (a voided/reversed entry, a duplicate reference line with
+    # the real amount posted separately, etc.). Drop them entirely rather
+    # than let them show up as a phantom "missing" row on whichever side
+    # has no matching zero-value counterpart.
+    return [r for r in out if r["row_type"] == "transaction" and (r["debit"] > 0.01 or r["credit"] > 0.01)]
 
 
 def amounts_close(a, b):
