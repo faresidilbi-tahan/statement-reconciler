@@ -213,9 +213,22 @@ def compare(ours_raw, supplier_raw):
     date_mm, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "nid")
 
     # Step 3: same date, amount within tolerance, id differs.
-    id_mm, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "date")
+    id_mm_candidates, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "date")
 
-    matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact]
+    # A pair only counts as a genuine id mismatch when BOTH sides actually
+    # printed an id and those ids are truly different. If either side has
+    # no id at all (common for cheque/payment rows some suppliers don't
+    # reference by number), there's nothing conflicting to flag - date and
+    # amount already agree, so it's a clean match, not a discrepancy.
+    id_mm, exact_via_step3 = [], []
+    for i, j in id_mm_candidates:
+        if ours[i]["id"].strip() and supplier[j]["id"].strip():
+            id_mm.append((i, j))
+        else:
+            exact_via_step3.append((i, j))
+
+    matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact] + \
+                   [matched_out(ours[i], supplier[j]) for i, j in exact_via_step3]
     issues = []
     for i, j in value_mm:
         issues.append(row_out("value_mismatch", ours[i], supplier[j]))
