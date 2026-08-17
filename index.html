@@ -130,11 +130,25 @@
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
 
+  @page { size: landscape; margin: 10mm; }
   @media print {
     .uploads, .filter-row, .actions, .downloads, #warnings { display: none !important; }
     body { background: #fff; }
-    .table-wrap { border: none; box-shadow: none; }
-    #summary { border: none; padding: 0 0 12px; }
+    main { max-width: none; margin: 0; padding: 0; }
+    .table-wrap { border: none; box-shadow: none; overflow: visible; }
+    #summary { border: none; padding: 0 0 10px; font-size: 12px; }
+    table { font-size: 9px; width: 100%; table-layout: fixed; }
+    th, td { padding: 4px 5px; word-break: break-word; white-space: normal !important; }
+    th:nth-child(1), td:nth-child(1) { width: 10%; }
+    th:nth-child(2), td:nth-child(2) { width: 9%; }
+    th:nth-child(3), td:nth-child(3) { width: 9%; }
+    th:nth-child(4), td:nth-child(4) { width: 34%; }
+    th:nth-child(5), td:nth-child(5),
+    th:nth-child(6), td:nth-child(6),
+    th:nth-child(7), td:nth-child(7),
+    th:nth-child(8), td:nth-child(8) { width: 9.5%; }
+    td.desc { min-width: 0; }
+    .badge { padding: 1px 5px; font-size: 9px; }
   }
 </style>
 </head>
