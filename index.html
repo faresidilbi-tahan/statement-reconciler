@@ -57,6 +57,15 @@
   .drop .filename { font-size: 13px; color: var(--blue-dark); font-weight: 600; margin-top: 8px; word-break: break-all; }
   .drop input { display: none; }
 
+  .our-file-row {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-top: 4px; font-size: 13px; color: var(--blue-dark); font-weight: 600;
+  }
+  .our-file-row .remove-file {
+    background: none; border: none; color: var(--red); font-weight: 700;
+    font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+
   .actions { margin: 18px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   button {
     font: inherit;
@@ -116,9 +125,17 @@
   .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
   .downloads button { font: inherit; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; border: 1px solid; }
   .dl-missing, .dl-diff, .dl-common { color: black !important; border-color: var(--line) !important; font-size: 12px !important; background: white !important;}
+  .dl-print { color: var(--blue) !important; border-color: var(--blue) !important; font-size: 12px !important; background: white !important; }
   .downloads button:disabled { opacity: .45; cursor: not-allowed; }
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
+
+  @media print {
+    .uploads, .filter-row, .actions, .downloads, #warnings { display: none !important; }
+    body { background: #fff; }
+    .table-wrap { border: none; box-shadow: none; }
+    #summary { border: none; padding: 0 0 12px; }
+  }
 </style>
 </head>
 <body>
@@ -132,9 +149,9 @@
   <div class="uploads">
     <div class="drop" id="dropOurs">
       <h2>Our file</h2>
-      <p class="hint">Fixed-template statement of account (doPDF). Click or drop a PDF.</p>
-      <p class="filename" id="nameOurs"></p>
-      <input type="file" id="fileOurs" accept="application/pdf">
+      <p class="hint">Fixed-template statement of account (doPDF). You can add more than one (e.g. separate monthly statements) — click or drop one or more PDFs.</p>
+      <div class="filename" id="oursFileList"></div>
+      <input type="file" id="fileOurs" accept="application/pdf" multiple>
     </div>
     <div class="drop" id="dropSupplier">
       <h2>Supplier file</h2>
@@ -152,7 +169,7 @@
   </div>
 
   <div class="actions">
-    <button id="compareBtn" disabled>Compare (v4)</button>
+    <button id="compareBtn" disabled>Compare (v5 · multi-file+print)</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -163,6 +180,7 @@
     <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
     <button class="dl-missing" id="missingSupplierCsvBtn">Download missing from supplier</button>
     <button class="dl-diff" id="diffCsvBtn">Download differences</button>
+    <button class="dl-print" id="printBtn">Print</button>
   </div>
   <div id="warnings"></div>
   <div class="allclear" id="allclear">No discrepancies — every transaction matched.</div>
@@ -184,9 +202,72 @@
 <script>
 (function () {
   var MAX_BYTES = 3.2 * 1024 * 1024; // base64 must stay under Vercel's 4.5 MB body limit
-  var files = { ours: null, supplier: null };
+  var files = { ours: [], supplier: null };
   var lastIssues = [];
   var lastMatched = [];
+
+  function renderOursFileList() {
+    var listEl = document.getElementById('oursFileList');
+    listEl.innerHTML = '';
+    files.ours.forEach(function (f, idx) {
+      var row = document.createElement('div');
+      row.className = 'our-file-row';
+      var span = document.createElement('span');
+      span.textContent = f.name + ' (' + Math.round(f.size / 1024) + ' KB)';
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'remove-file';
+      rm.textContent = '\u00d7';
+      rm.title = 'Remove this file';
+      rm.addEventListener('click', function (e) {
+        e.stopPropagation();
+        files.ours.splice(idx, 1);
+        renderOursFileList();
+        document.getElementById('dropOurs').classList.toggle('loaded', files.ours.length > 0);
+        updateButton();
+      });
+      row.appendChild(span);
+      row.appendChild(rm);
+      listEl.appendChild(row);
+    });
+  }
+
+  function setupOursDrop(zoneId, inputId, allowedExts) {
+    var zone = document.getElementById(zoneId);
+    var input = document.getElementById(inputId);
+    function acceptFiles(fileList) {
+      var addedAny = false;
+      for (var i = 0; i < fileList.length; i++) {
+        var file = fileList[i];
+        var ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (allowedExts.indexOf(ext) === -1) {
+          setStatus('"' + file.name + '" is not a supported file type (' + allowedExts.join(', ') + ').', true);
+          continue;
+        }
+        if (file.size > MAX_BYTES) {
+          setStatus('"' + file.name + '" is over 3 MB — compress or split it first.', true);
+          continue;
+        }
+        files.ours.push(file);
+        addedAny = true;
+      }
+      if (addedAny) setStatus('');
+      zone.classList.toggle('loaded', files.ours.length > 0);
+      renderOursFileList();
+      updateButton();
+    }
+    zone.addEventListener('click', function () { input.click(); });
+    input.addEventListener('change', function () {
+      acceptFiles(input.files);
+      input.value = ''; // allows re-selecting the same file again later
+    });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('dragover'); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault(); zone.classList.remove('dragover');
+      acceptFiles(e.dataTransfer.files);
+    });
+  }
 
   function setupDrop(zoneId, inputId, nameId, key, allowedExts) {
     var zone = document.getElementById(zoneId);
@@ -218,7 +299,7 @@
   }
 
   function updateButton() {
-    document.getElementById('compareBtn').disabled = !(files.ours && files.supplier);
+    document.getElementById('compareBtn').disabled = !(files.ours.length > 0 && files.supplier);
   }
 
   function setStatus(msg, isError) {
@@ -358,7 +439,7 @@
 
   document.getElementById('compareBtn').addEventListener('click', function () {
     var btn = this;
-    if (!files.ours || !files.supplier) {
+    if (!files.ours.length || !files.supplier) {
       setStatus('Please re-select both files before comparing.', true);
       updateButton();
       return;
@@ -374,32 +455,46 @@
     var dateFrom = document.getElementById('dateFrom').value;
     var dateTo = document.getElementById('dateTo').value;
 
-    Promise.all([toBase64(files.ours), toBase64(files.supplier)])
-      .then(function (b64s) {
-        if (!b64s[0] || !b64s[1]) {
+    Promise.all([
+      Promise.all(files.ours.map(toBase64)),
+      toBase64(files.supplier)
+    ])
+      .then(function (res) {
+        var oursB64List = res[0], supplierB64 = res[1];
+        if (oursB64List.some(function (b) { return !b; }) || !supplierB64) {
           throw new Error('One of the files could not be read - please re-select it and try again.');
         }
-        setStatus('Extracting both statements…');
+        setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the supplier statement…');
         return Promise.all([
-          post('/api/extract-ours', { pdf_base64: b64s[0] }),
-          post('/api/extract-supplier', { file_base64: b64s[1], filename: files.supplier.name })
+          Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
+          post('/api/extract-supplier', { file_base64: supplierB64, filename: files.supplier.name })
         ]);
       })
       .then(function (results) {
-        var ours = results[0], supplier = results[1];
-        var oursRows = filterRowsByDate(ours.rows, dateFrom, dateTo);
+        var oursResultsList = results[0], supplier = results[1];
+        // combine every "our" file's rows into one dataset, as if it were a single file
+        var oursRowsAll = [], oursWarningsAll = [], oursBuildTag = null;
+        oursResultsList.forEach(function (r, idx) {
+          oursRowsAll = oursRowsAll.concat(r.rows);
+          (r.warnings || []).forEach(function (w) {
+            oursWarningsAll.push((oursResultsList.length > 1 ? '[' + files.ours[idx].name + '] ' : '') + w);
+          });
+          oursBuildTag = r.build_tag || oursBuildTag;
+        });
+
+        var oursRows = filterRowsByDate(oursRowsAll, dateFrom, dateTo);
         var supplierRows = filterRowsByDate(supplier.rows, dateFrom, dateTo);
         var hint = document.getElementById('dateHint');
         var filterPart = (dateFrom || dateTo) ?
-          'filtered: ' + oursRows.length + ' of ' + ours.rows.length + ' our rows, ' +
+          'filtered: ' + oursRows.length + ' of ' + oursRowsAll.length + ' our rows, ' +
           supplierRows.length + ' of ' + supplier.rows.length + ' supplier rows | ' :
-          'extracted: ' + ours.rows.length + ' our rows, ' + supplier.rows.length + ' supplier rows | ';
+          'extracted: ' + oursRowsAll.length + ' our rows' + (files.ours.length > 1 ? ' from ' + files.ours.length + ' files' : '') + ', ' + supplier.rows.length + ' supplier rows | ';
         hint.textContent = '(' + filterPart +
-          'extractor builds: ours=' + (ours.build_tag || 'unknown') +
+          'extractor builds: ours=' + (oursBuildTag || 'unknown') +
           ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
         return post('/api/compare', { ours: oursRows, supplier: supplierRows })
-          .then(function (cmp) { render(cmp, ours.warnings); });
+          .then(function (cmp) { render(cmp, oursWarningsAll); });
       })
       .then(function () { setStatus('Done.'); })
       .catch(function (err) { setStatus(err.message, true); })
@@ -431,6 +526,10 @@
       'differences.csv');
   });
 
+  document.getElementById('printBtn').addEventListener('click', function () {
+    window.print();
+  });
+
   function downloadCsv(rows, header, filename) {
     function cell(v) {
       if (v === null || v === undefined) v = '';
@@ -452,16 +551,16 @@
     URL.revokeObjectURL(a.href);
   }
 
-  setupDrop('dropOurs', 'fileOurs', 'nameOurs', 'ours', ['pdf']);
+  setupOursDrop('dropOurs', 'fileOurs', ['pdf']);
   setupDrop('dropSupplier', 'fileSupplier', 'nameSupplier', 'supplier', ['pdf', 'xlsx', 'xls', 'csv']);
 
   document.getElementById('clearAllBtn').addEventListener('click', function () {
     // files + upload zones
-    files.ours = null;
+    files.ours = [];
     files.supplier = null;
     document.getElementById('fileOurs').value = '';
     document.getElementById('fileSupplier').value = '';
-    document.getElementById('nameOurs').textContent = '';
+    document.getElementById('oursFileList').innerHTML = '';
     document.getElementById('nameSupplier').textContent = '';
     document.getElementById('dropOurs').classList.remove('loaded', 'dragover');
     document.getElementById('dropSupplier').classList.remove('loaded', 'dragover');
