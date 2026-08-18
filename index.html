@@ -383,6 +383,9 @@
     var summaryEl = document.getElementById('summary');
     summaryEl.style.display = 'block';
     var diffTotal = s.value_mismatch + s.date_mismatch + s.id_mismatch;
+    var idNote = s.id_disregarded
+      ? ' <span style="color:#b26a00;font-weight:600;">⚠ No rows matched by ID at all, so ID was disregarded for this comparison — matched by date + amount only. Check the common (matched) sheet\'s our_id/supplier_id columns to see the two numbering systems side by side.</span>'
+      : '';
     summaryEl.innerHTML =
       '<strong>' + s.matched + ' matched, ' +
       diffTotal + ' difference' + (diffTotal === 1 ? '' : 's') +
@@ -391,7 +394,8 @@
       s.missing_in_supplier + ' missing from supplier</strong>' +
       ' — ' + s.our_transactions + ' of our transactions vs ' + s.supplier_transactions + ' supplier rows.' +
       (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '') +
-      ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>';
+      ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>' +
+      idNote;
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -469,38 +473,23 @@
     var dateFrom = document.getElementById('dateFrom').value;
     var dateTo = document.getElementById('dateTo').value;
 
-    function updateHint(oursTotal, supplier, oursRows, supplierRows, oursBuildTag, retried) {
-      var hint = document.getElementById('dateHint');
-      var filterPart = (dateFrom || dateTo) ?
-        'filtered: ' + oursRows.length + ' of ' + oursTotal + ' our rows, ' +
-        supplierRows.length + ' of ' + supplier.rows.length + ' supplier rows | ' :
-        'extracted: ' + oursTotal + ' our rows' + (files.ours.length > 1 ? ' from ' + files.ours.length + ' files' : '') + ', ' + supplier.rows.length + ' supplier rows | ';
-      var aiNote = (supplier.extraction_method === 'ai_fallback')
-        ? ' — ⚠ supplier file used AI ' + (retried ? 're-extraction (retried after zero matches)' : 'fallback extraction (deterministic parsing failed for this layout)')
-        : '';
-      hint.textContent = '(' + filterPart +
-        'extractor builds: ours=' + (oursBuildTag || 'unknown') +
-        ', supplier=' + (supplier.build_tag || 'unknown') + ')' + aiNote;
-    }
-
     Promise.all([
       Promise.all(files.ours.map(toBase64)),
       toBase64(files.supplier)
     ])
-      .then(function (res) {
-        var oursB64List = res[0], supplierB64 = res[1];
+      .then(function (b64s) {
+        var oursB64List = b64s[0], supplierB64 = b64s[1];
         if (oursB64List.some(function (b) { return !b; }) || !supplierB64) {
           throw new Error('One of the files could not be read - please re-select it and try again.');
         }
         setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the supplier statement…');
         return Promise.all([
           Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
-          post('/api/extract-supplier', { file_base64: supplierB64, filename: files.supplier.name }),
-          Promise.resolve(supplierB64)
+          post('/api/extract-supplier', { file_base64: supplierB64, filename: files.supplier.name })
         ]);
       })
       .then(function (results) {
-        var oursResultsList = results[0], supplier = results[1], supplierB64 = results[2];
+        var oursResultsList = results[0], supplier = results[1];
         // combine every "our" file's rows into one dataset, as if it were a single file
         var oursRowsAll = [], oursWarningsAll = [], oursBuildTag = null;
         oursResultsList.forEach(function (r, idx) {
@@ -513,36 +502,17 @@
 
         var oursRows = filterRowsByDate(oursRowsAll, dateFrom, dateTo);
         var supplierRows = filterRowsByDate(supplier.rows, dateFrom, dateTo);
-        updateHint(oursRowsAll.length, supplier, oursRows, supplierRows, oursBuildTag, false);
+        var hint = document.getElementById('dateHint');
+        var filterPart = (dateFrom || dateTo) ?
+          'filtered: ' + oursRows.length + ' of ' + oursRowsAll.length + ' our rows, ' +
+          supplierRows.length + ' of ' + supplier.rows.length + ' supplier rows | ' :
+          'extracted: ' + oursRowsAll.length + ' our rows' + (files.ours.length > 1 ? ' from ' + files.ours.length + ' files' : '') + ', ' + supplier.rows.length + ' supplier rows | ';
+        hint.textContent = '(' + filterPart +
+          'extractor builds: ours=' + (oursBuildTag || 'unknown') +
+          ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
-
         return post('/api/compare', { ours: oursRows, supplier: supplierRows })
-          .then(function (cmp) {
-            var zeroMatch = cmp.summary.matched === 0 && cmp.summary.our_transactions > 0 && cmp.summary.supplier_transactions > 0;
-            // Dates/amounts can look almost right while every id still comes
-            // out wrong (a supplier-specific id format quirk), which the
-            // extractor itself has no way to detect on its own - zero exact
-            // matches despite real data on both sides is the actual signal.
-            // Only retry once, and only if this wasn't already an AI pass.
-            if (!zeroMatch || supplier.extraction_method === 'ai_fallback') {
-              render(cmp, oursWarningsAll);
-              return;
-            }
-            setStatus('No matches found — retrying supplier extraction with AI…');
-            return post('/api/extract-supplier', { file_base64: supplierB64, filename: files.supplier.name, force_ai: true })
-              .then(function (retriedSupplier) {
-                var retriedSupplierRows = filterRowsByDate(retriedSupplier.rows, dateFrom, dateTo);
-                updateHint(oursRowsAll.length, retriedSupplier, oursRows, retriedSupplierRows, oursBuildTag, true);
-                setStatus('Re-matching after AI retry…');
-                return post('/api/compare', { ours: oursRows, supplier: retriedSupplierRows })
-                  .then(function (cmp2) { render(cmp2, oursWarningsAll.concat(retriedSupplier.warnings || [])); });
-              })
-              .catch(function (retryErr) {
-                // AI retry itself failed (e.g. no API key configured) - show
-                // the original result rather than losing it entirely.
-                render(cmp, oursWarningsAll.concat(['AI retry after zero matches failed: ' + retryErr.message]));
-              });
-          });
+          .then(function (cmp) { render(cmp, oursWarningsAll); });
       })
       .then(function () { setStatus('Done.'); })
       .catch(function (err) { setStatus(err.message, true); })
@@ -551,7 +521,7 @@
 
   document.getElementById('commonCsvBtn').addEventListener('click', function () {
     downloadCsv(lastMatched,
-      ['date', 'id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
+      ['date', 'id', 'our_id', 'supplier_id', 'description', 'our_debit', 'our_credit', 'supplier_debit', 'supplier_credit'],
       'common-matched.csv');
   });
 
