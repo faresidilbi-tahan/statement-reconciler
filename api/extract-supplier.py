@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-13-vat-merge"
+BUILD_TAG = "2026-08-18-col-validation"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -72,6 +72,20 @@ MONTH_DATE_RE = re.compile(
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
 REF_RE = re.compile(r"(?:INV|C/N)\s*[:#]?\s*(\d{4,})", re.IGNORECASE)
+
+
+def is_valid_col_map(mapped):
+    """A header mapping only counts if debit/credit/balance actually sit in
+    DIFFERENT physical columns, and separately from date/id/description.
+    Some PDFs draw horizontal row rules with no vertical column dividers at
+    all, so a table-detection pass can find "rows" but only ever returns
+    one wide cell per row; naively matching keywords against that single
+    cell's text can make multiple fields appear to share one column index.
+    That's not a real column split, so reject it and let the caller fall
+    back to a strategy that reads actual word positions instead."""
+    if len(mapped) < 3 or not any(c in mapped for c in ("debit", "credit", "balance")):
+        return False
+    return len(set(mapped.values())) >= 3
 
 
 def match_column(text):
@@ -350,7 +364,7 @@ def find_external_header_mapping(page, table):
                     if col not in mapping:
                         mapping[col] = idx
                     break
-        if len(mapping) > best_count and len(mapping) >= 3 and any(c in mapping for c in ("debit", "credit", "balance")):
+        if len(mapping) > best_count and is_valid_col_map(mapping):
             best_map, best_count = mapping, len(mapping)
     return best_map
 
@@ -375,7 +389,7 @@ def parse_tables_strategy(pdf):
                     col = match_column(c)
                     if col and col not in mapped:
                         mapped[col] = idx
-                if len(mapped) >= 3 and any(c in mapped for c in ("debit", "credit", "balance")):
+                if is_valid_col_map(mapped):
                     col_map, data_rows = mapped, table_rows[i + 1:]
                     break
             # second choice: header printed as free text above the ruled grid
