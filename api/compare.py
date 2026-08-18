@@ -28,7 +28,7 @@ from datetime import datetime
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-14-zero-value"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-18-id-disregard"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -184,6 +184,8 @@ def matched_out(o, s):
     return {
         "date": o["date"],
         "id": o["id"] or s["id"],
+        "our_id": o["id"],
+        "supplier_id": s["id"],
         "description": o["description"],
         "our_debit": o["debit"],
         "our_credit": o["credit"],
@@ -226,6 +228,18 @@ def compare(ours_raw, supplier_raw):
             id_mm.append((i, j))
         else:
             exact_via_step3.append((i, j))
+
+    # If literally nothing matched by id in any form (steps 1-2 both came
+    # up empty) but there ARE real date+amount matches, that's a strong
+    # signal this supplier's id format simply isn't compatible with ours -
+    # not that 17 individual transactions all happen to disagree. Treat
+    # date+amount as the real match in that case rather than flagging every
+    # single row as a difference; matched_out still carries both raw id
+    # strings so the discrepancy stays visible, just not as a blocker.
+    id_disregarded = not exact and not value_mm and not date_mm and bool(id_mm)
+    if id_disregarded:
+        exact_via_step3 = exact_via_step3 + id_mm
+        id_mm = []
 
     matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact] + \
                    [matched_out(ours[i], supplier[j]) for i, j in exact_via_step3]
@@ -275,6 +289,7 @@ def compare(ours_raw, supplier_raw):
             "missing_in_supplier": len(missing_in_supplier),
             "missing_in_tahan": len(missing_in_tahan),
             "our_date_range": list(our_range) if our_range else None,
+            "id_disregarded": id_disregarded,
         },
         "issues": issues,
         "matched": matched_rows,
