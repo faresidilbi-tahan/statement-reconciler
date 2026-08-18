@@ -32,7 +32,118 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-18-col-validation"
+BUILD_TAG = "2026-08-18-ai-fallback"
+
+# ------------------------------------------------------------ AI fallback
+#
+# The deterministic parser above handles every layout pattern we've seen
+# so far, but with 200+ suppliers each on their own accounting software,
+# some will inevitably use a layout nothing here anticipates. Rather than
+# fail outright, a genuinely broken extraction (no rows at all, or every
+# amount reading as zero because columns never got separated) falls back
+# to sending the actual page image to Claude for one-off extraction. Every
+# supplier still tries the free deterministic path FIRST; the AI call only
+# ever fires for the ones that path can't handle, so this doesn't add cost
+# for suppliers already working correctly.
+
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MAX_TOKENS = 8000
+
+CLAUDE_EXTRACTION_PROMPT = """You are extracting line items from a statement of account PDF for reconciliation purposes. The layout is unknown and may be in English or Arabic.
+
+Return ONLY a JSON array. No markdown fences, no commentary, no keys outside the array.
+
+Each line item becomes one object:
+{"date": "YYYY-MM-DD", "id": "...", "description": "...", "debit": 0, "credit": 0, "balance": 0, "row_type": "transaction"}
+
+Rules:
+- Include every line item from every page, in document order.
+- "date": convert whatever format is printed to YYYY-MM-DD. If the year is ambiguous, prefer the format most consistent with the other dates in the same document. Use "" if a row has no date.
+- "id": the invoice, voucher, document, or reference number for that row, exactly as printed (letters and digits). Use "" if none is printed.
+- "description": the narrative/description text as printed.
+- "debit" and "credit": plain numbers, no thousands separators, no currency symbols. Use 0 for an empty column. Copy each amount into the column it is printed in - do not reinterpret or swap sides.
+- "balance": the running balance for the row if printed, else 0. Output just the number, without any CR/DR/+/- marker.
+- "row_type": "opening_balance" for opening/brought-forward rows, "closing_balance" for closing/carried-forward/final-total rows, "transaction" for everything else.
+- Do NOT emit rows for column headers, page headers/footers, addresses, or blank separators.
+- If two printed lines are clearly one logical item (a wrapped description), merge them into one object.
+
+Output the JSON array and nothing else."""
+
+
+def is_suspicious_extraction(rows):
+    """The deterministic parser can technically 'succeed' (find a header,
+    produce rows) while still having gotten the columns wrong - e.g. a
+    table with no vertical dividers can fool it into reading every amount
+    as blank. Treat zero real rows, or rows where NOT ONE has a nonzero
+    debit or credit, as a failed extraction worth retrying via AI rather
+    than silently returning a statement that looks empty."""
+    txns = [r for r in rows if r.get("row_type") == "transaction"]
+    if not txns:
+        return True
+    return not any((r.get("debit") or 0) > 0.01 or (r.get("credit") or 0) > 0.01 for r in txns)
+
+
+def _num(v):
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+    except ValueError:
+        return 0.0
+
+
+def extract_via_claude(file_bytes, media_type="application/pdf"):
+    """Fallback extraction for files the deterministic parser can't handle.
+    Requires ANTHROPIC_API_KEY to be set in the deployment's environment
+    variables; raises a clear error if it isn't, rather than failing
+    silently or with an unrelated stack trace."""
+    import os
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Deterministic parsing failed for this file, and the AI fallback needs "
+            "ANTHROPIC_API_KEY set in Vercel's environment variables to run. Add it "
+            "there, or add a COLUMN_KEYWORDS synonym if this is a layout issue."
+        )
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key)
+    b64data = base64.b64encode(file_bytes).decode()
+    message = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=CLAUDE_MAX_TOKENS,
+        temperature=0,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": media_type, "data": b64data}},
+                {"type": "text", "text": CLAUDE_EXTRACTION_PROMPT},
+            ],
+        }],
+    )
+    if message.stop_reason == "max_tokens":
+        raise ValueError("AI fallback ran out of output space for this file - it may be too long for a single pass.")
+
+    text = "".join(b.text for b in message.content if b.type == "text")
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("AI fallback did not return usable data for this file.")
+    raw_rows = json.loads(text[start:end + 1])
+
+    rows = []
+    for r in raw_rows:
+        if not isinstance(r, dict):
+            continue
+        rows.append({
+            "date": str(r.get("date") or ""),
+            "id": str(r.get("id") or ""),
+            "description": str(r.get("description") or ""),
+            "debit": _num(r.get("debit")),
+            "credit": _num(r.get("credit")),
+            "balance": _num(r.get("balance")),
+            "row_type": r.get("row_type") if r.get("row_type") in
+                ("transaction", "opening_balance", "closing_balance") else "transaction",
+        })
+    return rows
+
 
 # ------------------------------------------------------------ shared vocab
 
@@ -748,14 +859,35 @@ def merge_split_vat_lines(rows):
 
 def parse_supplier_file(file_bytes, filename=None):
     fmt = sniff_format(file_bytes, filename)
-    if fmt == "pdf":
-        rows, warnings, meta = parse_pdf(file_bytes)
-    elif fmt == "xlsx":
-        rows, warnings, meta = parse_xlsx(file_bytes)
-    else:
-        rows, warnings, meta = parse_csv(file_bytes)
+    extraction_method = "deterministic"
+    try:
+        if fmt == "pdf":
+            rows, warnings, meta = parse_pdf(file_bytes)
+        elif fmt == "xlsx":
+            rows, warnings, meta = parse_xlsx(file_bytes)
+        else:
+            rows, warnings, meta = parse_csv(file_bytes)
+        if is_suspicious_extraction(rows):
+            raise ValueError(
+                "Deterministic parsing found a table but every row came back "
+                "with no debit or credit amount - the columns likely didn't "
+                "split correctly for this layout."
+            )
+    except ValueError as det_error:
+        if fmt != "pdf":
+            # AI fallback only applies to PDFs (scanned/odd-layout supplier
+            # statements); a broken xlsx/csv header means something more
+            # fundamental is wrong with that file, so surface it directly.
+            raise
+        rows = extract_via_claude(file_bytes, "application/pdf")
+        if not rows:
+            raise ValueError(f"{det_error} AI fallback also found no rows in this file.")
+        warnings = [f"Deterministic parsing failed ({det_error}) - used AI fallback extraction instead."]
+        meta = {"pages": None}
+        extraction_method = "ai_fallback"
     rows = merge_split_vat_lines(rows)
-    result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG, "format": fmt}
+    result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG,
+              "format": fmt, "extraction_method": extraction_method}
     result.update(meta)
     return result
 
