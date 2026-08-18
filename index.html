@@ -183,7 +183,7 @@
   </div>
 
   <div class="actions">
-    <button id="compareBtn" disabled>Compare</button>
+    <button id="compareBtn" disabled>Compare (v5 · multi-file+print)</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -503,9 +503,12 @@
           'filtered: ' + oursRows.length + ' of ' + oursRowsAll.length + ' our rows, ' +
           supplierRows.length + ' of ' + supplier.rows.length + ' supplier rows | ' :
           'extracted: ' + oursRowsAll.length + ' our rows' + (files.ours.length > 1 ? ' from ' + files.ours.length + ' files' : '') + ', ' + supplier.rows.length + ' supplier rows | ';
+        var aiNote = (supplier.extraction_method === 'ai_fallback')
+          ? ' — ⚠ supplier file used AI fallback extraction (deterministic parsing failed for this layout)'
+          : '';
         hint.textContent = '(' + filterPart +
           'extractor builds: ours=' + (oursBuildTag || 'unknown') +
-          ', supplier=' + (supplier.build_tag || 'unknown') + ')';
+          ', supplier=' + (supplier.build_tag || 'unknown') + ')' + aiNote;
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
         return post('/api/compare', { ours: oursRows, supplier: supplierRows })
           .then(function (cmp) { render(cmp, oursWarningsAll); });
