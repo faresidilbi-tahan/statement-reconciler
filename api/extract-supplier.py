@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-18-ai-fallback"
+BUILD_TAG = "2026-08-18-retry-on-zero-match"
 
 # ------------------------------------------------------------ AI fallback
 #
@@ -857,8 +857,25 @@ def merge_split_vat_lines(rows):
     return merged
 
 
-def parse_supplier_file(file_bytes, filename=None):
+def parse_supplier_file(file_bytes, filename=None, force_ai=False):
     fmt = sniff_format(file_bytes, filename)
+
+    if force_ai:
+        # Explicit re-extraction request (e.g. the deterministic pass parsed
+        # something, but comparing it against our file matched nothing at
+        # all - a strong sign the id/date/amount fields came out wrong even
+        # though the row count looked plausible). Skip straight to AI.
+        media_type = "application/pdf" if fmt == "pdf" else (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if fmt == "xlsx" else "text/csv"
+        )
+        rows = extract_via_claude(file_bytes, media_type)
+        if not rows:
+            raise ValueError("AI re-extraction found no rows in this file.")
+        rows = merge_split_vat_lines(rows)
+        return {"rows": rows, "warnings": ["Re-extracted with AI at the app's request (previous extraction matched nothing)."],
+                "build_tag": BUILD_TAG, "format": fmt, "extraction_method": "ai_fallback"}
+
     extraction_method = "deterministic"
     try:
         if fmt == "pdf":
@@ -907,12 +924,13 @@ class handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
             b64 = data.get("file_base64") or data.get("pdf_base64", "")
             filename = data.get("filename", "")
+            force_ai = bool(data.get("force_ai", False))
             if "," in b64[:80]:
                 b64 = b64.split(",", 1)[1]
             if not b64:
                 return self._send(400, {"error": "file_base64 is required."})
             file_bytes = base64.b64decode(b64)
-            self._send(200, parse_supplier_file(file_bytes, filename))
+            self._send(200, parse_supplier_file(file_bytes, filename, force_ai=force_ai))
         except json.JSONDecodeError:
             self._send(400, {"error": "Invalid JSON body."})
         except ValueError as e:
