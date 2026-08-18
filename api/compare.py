@@ -28,7 +28,7 @@ from datetime import datetime
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-18-id-disregard"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-18-year-exclusion"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -38,14 +38,29 @@ def norm_id(v):
     """Normalize an id for matching. Suppliers commonly prefix their own
     reference with a document-type code ('1/249', 'INV-249', 'CN#295068'),
     so the whole string rarely matches ours verbatim even when it's really
-    the same invoice number. Extract the longest run of digits instead -
-    that's reliably the actual invoice/voucher number in every format
-    we've seen, regardless of what prefix or separator surrounds it."""
+    the same invoice number. Extract the longest run of digits - that's
+    reliably the actual invoice/voucher number in every format we've seen,
+    regardless of what prefix or separator surrounds it.
+
+    One exception: a 4-digit run that looks like a calendar year (e.g. the
+    "2026" inside "SAL-2026-2796") gets deprioritized, but ONLY when
+    something else follows it in the string - a year embedded mid-string
+    with a real number after it is almost always a batch/period marker,
+    not the id itself. A year-like run at the very END with nothing after
+    it is treated normally, since plenty of real invoice numbering schemes
+    just happen to produce ids in the 1900-2099 range (e.g. "1/1907")."""
     s = str(v or "")
     digit_runs = re.findall(r"\d+", s)
     if not digit_runs:
         return ""
-    best = max(digit_runs, key=len)
+
+    def looks_like_year(run):
+        return len(run) == 4 and run[:2] in ("19", "20")
+
+    filtered = [r for idx, r in enumerate(digit_runs)
+                if not (looks_like_year(r) and idx < len(digit_runs) - 1)]
+    candidates = filtered or digit_runs
+    best = max(candidates, key=len)
     return best.lstrip("0")
 
 
