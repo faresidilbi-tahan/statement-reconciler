@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-18-col-validation"
+BUILD_TAG = "2026-08-18-ref-extraction"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -71,7 +71,7 @@ MONTH_DATE_RE = re.compile(
     re.IGNORECASE)
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
-REF_RE = re.compile(r"(?:INV|C/N)\s*[:#]?\s*(\d{4,})", re.IGNORECASE)
+REF_RE = re.compile(r"(?:INV|C\s*/?\s*N)\s*[:#]?\s*([\w/-]+)", re.IGNORECASE)
 
 
 def is_valid_col_map(mapped):
@@ -182,7 +182,13 @@ def find_date(text):
 def extract_row_id(id_cell, description):
     m = REF_RE.search(str(description or ""))
     if m:
-        return m.group(1)
+        # "INV 26-2021" style refs pack a short prefix (year, branch code)
+        # and the real invoice number together; take the longest digit run
+        # rather than just whatever comes immediately after INV/C-N, so a
+        # short prefix doesn't win over the actual number that follows it.
+        runs = re.findall(r"\d+", m.group(1))
+        if runs:
+            return max(runs, key=len)
     for tok in str(id_cell or "").split():
         if re.search(r"\d", tok) and not find_date(tok):
             return tok
