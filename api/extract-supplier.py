@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-18-ref-extraction"
+BUILD_TAG = "2026-08-18-drop-dateless"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -58,7 +58,7 @@ ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "check", "chk", "cheque",
 
 OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "balance until",
                  "افتتاحي", "سابق", "مدور", "رصيد اول")
-CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand",
+CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand", "movement",
                  "ending balance", "end date", "balance as at",
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
 SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
@@ -209,6 +209,13 @@ def build_row(cells, raw_low):
         row_type = "transaction"
 
     if not (date or any(v is not None for v in (debit, credit, balance))):
+        return None
+    # A genuine transaction always has a date. An amount-bearing row with no
+    # date that isn't recognized as an opening/closing marker is almost
+    # certainly a stray summary/footer line this supplier's wording didn't
+    # match any keyword for ("Movement", "Sub-total", etc.) - drop it rather
+    # than let it become a phantom transaction with no date to compare on.
+    if row_type == "transaction" and not date:
         return None
     desc = cells.get("description", "")
     return {
