@@ -15,6 +15,16 @@ import io
 import json
 import re
 
+# pdfplumber extracts right-to-left (Arabic/Hebrew) text runs in reversed
+# character order - this restores correct reading order for just those
+# runs, leaving any interleaved English/numbers/punctuation untouched.
+ARABIC_RUN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F][\u0600-\u06FF\u0750-\u077F\s]*[\u0600-\u06FF\u0750-\u077F]|[\u0600-\u06FF\u0750-\u077F]")
+
+
+def fix_bidi_text(text):
+    return ARABIC_RUN_RE.sub(lambda m: m.group(0)[::-1], text)
+
+
 import pdfplumber
 
 BUILD_TAG = "2026-08-14-cn-ref"
@@ -24,7 +34,7 @@ COBR_RE = re.compile(r"^([A-Za-z]{2})(\d{2})$")
 TYPEOTL_RE = re.compile(r"^([A-Za-z]{3})(\d{1,3})(\S*)$")
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
 PURE_DIGITS_RE = re.compile(r"^[\d\s./,\-]+$")
-INV_ID_RE = re.compile(r"(?:inv\s*#|c\s*/?\s*n\s*#)\s*(\d+)", re.IGNORECASE)
+INV_ID_RE = re.compile(r"(?:inv\s*#|c\s*r?\s*/?\s*n\s*#)\s*(\d+)", re.IGNORECASE)
 
 OPENING_WORDS = ("opening", "balance until", "b/f", "brought")
 CLOSING_WORDS = ("closing", "balance as at", "c/f", "carried")
@@ -220,7 +230,7 @@ def parse_pdf(pdf_bytes):
                     rows.append({
                         "date": fields["date"],
                         "id": fields["vchno"],
-                        "description": " ".join(desc_tokens).strip(),
+                        "description": fix_bidi_text(" ".join(desc_tokens).strip()),
                         "debit": amounts.get("debit", 0.0) or 0.0,
                         "credit": amounts.get("credit", 0.0) or 0.0,
                         "balance": amounts.get("balance", 0.0) or 0.0,
