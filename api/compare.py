@@ -23,12 +23,23 @@ import json
 import re
 from datetime import datetime
 
+AMOUNT_ONLY_DATE_WINDOW_DAYS = 30  # see match_amount_within_date_window
+
+
+def _parse_iso_date(s):
+    try:
+        y, m, d = (int(p) for p in s.split("-"))
+        return datetime(y, m, d).date()
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 # Amounts within this many dollars/cents of each other count as "the same"
 # for matching purposes. Suppliers frequently round a total a cent or two
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-18-year-exclusion"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-20-amt-date-window"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -195,6 +206,46 @@ def row_out(kind, o=None, s=None):
     }
 
 
+def match_amount_within_date_window(ours, supplier, ours_pool, supplier_pool, max_days):
+    """Last-resort match for leftovers sharing neither id nor an exact
+    date - common for cheque/receipt pairs where each side uses its own
+    reference numbering and the posting date can drift a few days (cheque
+    written vs. cash cleared/recorded). Pairs by amount within tolerance
+    AND date within max_days.
+
+    When several candidates on one side compete for the same amount (two
+    of our entries near one supplier receipt, say), assignment happens in
+    GLOBAL order of closest date match first - not just whichever ours-row
+    happens to be visited first - so the genuinely nearer pairing always
+    wins the shared candidate rather than an accident of list order."""
+    candidates = []
+    for i in ours_pool:
+        o_date = _parse_iso_date(ours[i]["date"])
+        if o_date is None:
+            continue
+        for j in supplier_pool:
+            if not amounts_close(ours[i]["amt"], supplier[j]["amt"]):
+                continue
+            s_date = _parse_iso_date(supplier[j]["date"])
+            if s_date is None:
+                continue
+            diff = abs((o_date - s_date).days)
+            if diff <= max_days:
+                candidates.append((diff, i, j))
+    candidates.sort(key=lambda c: c[0])
+
+    used_o, used_s, pairs = set(), set(), []
+    for diff, i, j in candidates:
+        if i in used_o or j in used_s:
+            continue
+        pairs.append((i, j))
+        used_o.add(i)
+        used_s.add(j)
+    leftover_ours = [i for i in ours_pool if i not in used_o]
+    leftover_supplier = [j for j in supplier_pool if j not in used_s]
+    return pairs, leftover_ours, leftover_supplier
+
+
 def matched_out(o, s):
     return {
         "date": o["date"],
@@ -256,8 +307,20 @@ def compare(ours_raw, supplier_raw):
         exact_via_step3 = exact_via_step3 + id_mm
         id_mm = []
 
+    # Step 4: genuine leftovers - neither id nor date lined up anywhere
+    # above. Suppliers commonly record a payment under their own receipt
+    # number while we record it under our own cheque batch number, with
+    # the posting date drifting a few days between "cheque written" and
+    # "cash cleared" - amount is the only thing guaranteed to agree. Treat
+    # these as clean matches (not a flagged difference) since there's
+    # nothing conflicting to show, just two different bookkeeping systems
+    # describing the same payment.
+    amt_only_pairs, o_pool, s_pool = match_amount_within_date_window(
+        ours, supplier, o_pool, s_pool, AMOUNT_ONLY_DATE_WINDOW_DAYS)
+
     matched_rows = [matched_out(ours[i], supplier[j]) for i, j in exact] + \
-                   [matched_out(ours[i], supplier[j]) for i, j in exact_via_step3]
+                   [matched_out(ours[i], supplier[j]) for i, j in exact_via_step3] + \
+                   [matched_out(ours[i], supplier[j]) for i, j in amt_only_pairs]
     issues = []
     for i, j in value_mm:
         issues.append(row_out("value_mismatch", ours[i], supplier[j]))
