@@ -32,7 +32,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-18-drop-dateless"
+BUILD_TAG = "2026-08-20-multi-id-datefill"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -53,7 +53,8 @@ COLUMN_KEYWORDS = {
 # used only for spreadsheet parsing, where several id columns can coexist
 # on one row (e.g. "Trans Id", "Invoice number", "Check Num" all at once)
 ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "check", "chk", "cheque",
-                       "ref", "reference", "doc", "document", "trx", "id",
+                       "doc", "document", "trx", "id",
+                       "ref", "reference",
                        "no", "number", "num", "nb"]
 
 OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "balance until",
@@ -65,7 +66,7 @@ SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
               "p.o.box", "www.", "@", "pdc")
 
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
-NUM_DATE_RE = re.compile(r"(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})")
+NUM_DATE_RE = re.compile(r"(\d{1,4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,4})")
 MONTH_DATE_RE = re.compile(
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*,?\s+(\d{4})",
     re.IGNORECASE)
@@ -112,10 +113,13 @@ def id_column_rank(header_text):
 
 def parse_amount(token):
     token = str(token).strip()
-    m = AMOUNT_RE.match(token)
+    # strip common currency symbols/codes that can appear anywhere in the
+    # token, including inside parentheses for negatives ("($1,085.77)")
+    cleaned = re.sub(r"(?i)us\$|usd|\$", "", token).strip()
+    m = AMOUNT_RE.match(cleaned)
     if not m:
         return None
-    s = token[: len(token) - 2] if m.group(1) else token
+    s = cleaned[: len(cleaned) - 2] if m.group(1) else cleaned
     s = s.replace(",", "").replace("(", "-").replace(")", "")
     try:
         return float(s)
@@ -210,13 +214,12 @@ def build_row(cells, raw_low):
 
     if not (date or any(v is not None for v in (debit, credit, balance))):
         return None
-    # A genuine transaction always has a date. An amount-bearing row with no
-    # date that isn't recognized as an opening/closing marker is almost
-    # certainly a stray summary/footer line this supplier's wording didn't
-    # match any keyword for ("Movement", "Sub-total", etc.) - drop it rather
-    # than let it become a phantom transaction with no date to compare on.
-    if row_type == "transaction" and not date:
-        return None
+    # Note: a dateless "transaction" row is NOT dropped here - the caller
+    # gets first chance to fill in a date inherited from the previous row
+    # (some suppliers print a date once per batch of line items and leave
+    # it blank on the rest of that batch), and only drops the row if it's
+    # still dateless after that - see parse_tables_strategy /
+    # parse_words_strategy.
     desc = cells.get("description", "")
     return {
         "date": date,
@@ -305,6 +308,7 @@ def parse_words_strategy(pdf):
         intervals = build_intervals(anchors, page.width)
 
         prev_was_data = False
+        prev_date = ""
         for line in lines:
             raw = " ".join(w["text"] for w in line).strip()
             if not raw:
@@ -321,6 +325,16 @@ def parse_words_strategy(pdf):
             cells = assign_columns(line, intervals)
             row = build_row(cells, raw_low)
             if row:
+                # See parse_tables_strategy: some suppliers print a date
+                # once per batch of line items and leave it blank on the
+                # rest of that batch.
+                if not row["date"] and prev_date and row["row_type"] == "transaction":
+                    row["date"] = prev_date
+                if row["row_type"] == "transaction" and not row["date"]:
+                    prev_was_data = False
+                    continue  # still no usable date - a genuine stray line
+                if row["date"]:
+                    prev_date = row["date"]
                 rows.append(row)
                 prev_was_data = True
             elif prev_was_data and is_continuation(cells) and rows:
@@ -385,7 +399,7 @@ def find_external_header_mapping(page, table):
 def parse_tables_strategy(pdf):
     rows, warnings = [], []
     found_any = False
-    last_col_map, last_col_count = None, None
+    last_col_map, last_id_candidates, last_col_count = None, [], None
     for page in pdf.pages:
         for table in page.find_tables():
             table_rows = table.extract()
@@ -393,17 +407,18 @@ def parse_tables_strategy(pdf):
                 continue
             this_col_count = len(table_rows[0]) if table_rows[0] else 0
 
-            col_map, data_rows = None, table_rows
-            # first choice: a header row printed inside the table itself
+            col_map, id_candidates, data_rows = None, [], table_rows
+            # first choice: a header row printed inside the table itself.
+            # map_sheet_header ranks every id-like column (a table can have
+            # several - "Accounting Ref.", "Document Nbr." - and the one
+            # that's actually populated and matches our own numbering
+            # varies per supplier) instead of only keeping whichever
+            # appeared first.
             for i, cells in enumerate(table_rows[:10]):
                 cells_norm = [(c or "").replace("\n", " ").strip() for c in cells]
-                mapped = {}
-                for idx, c in enumerate(cells_norm):
-                    col = match_column(c)
-                    if col and col not in mapped:
-                        mapped[col] = idx
+                mapped, ids = map_sheet_header(cells_norm)
                 if is_valid_col_map(mapped):
-                    col_map, data_rows = mapped, table_rows[i + 1:]
+                    col_map, id_candidates, data_rows = mapped, ids, table_rows[i + 1:]
                     break
             # second choice: header printed as free text above the ruled grid
             if col_map is None:
@@ -417,14 +432,15 @@ def parse_tables_strategy(pdf):
             # (e.g. an address block) and applying a stale map to it would
             # silently produce garbage rows.
             if col_map is None and last_col_map is not None and this_col_count == last_col_count:
-                col_map = last_col_map
+                col_map, id_candidates = last_col_map, last_id_candidates
                 data_rows = table_rows
             if col_map is None:
                 continue
 
-            last_col_map, last_col_count = col_map, this_col_count
+            last_col_map, last_id_candidates, last_col_count = col_map, id_candidates, this_col_count
             found_any = True
             prev_was_data = False
+            prev_date = ""
             for cells in data_rows:
                 cells = [(c or "").replace("\n", " ").strip() for c in cells]
 
@@ -433,12 +449,33 @@ def parse_tables_strategy(pdf):
                     return cells[i] if 0 <= i < len(cells) else ""
 
                 celld = {f: get(f) for f in COLUMN_KEYWORDS}
+                # pick the first ranked id-candidate column that's actually
+                # populated on THIS row - some suppliers group several line
+                # items under one shared reference, printed only once, so a
+                # later, more specific column (e.g. a per-line document
+                # number) may be the one that's really filled in here.
+                for _, idx in id_candidates:
+                    if idx < len(cells) and cells[idx]:
+                        celld["id"] = cells[idx]
+                        break
                 raw_low = " ".join(cells).lower()
                 if any(s in raw_low for s in SKIP_WORDS):
                     prev_was_data = False
                     continue
                 row = build_row(celld, raw_low)
                 if row:
+                    # Some suppliers print the date once per batch of line
+                    # items and leave it blank on subsequent lines in that
+                    # batch - inherit the last seen date rather than
+                    # discarding a real transaction just because its own
+                    # date cell was blank.
+                    if not row["date"] and prev_date and row["row_type"] == "transaction":
+                        row["date"] = prev_date
+                    if row["row_type"] == "transaction" and not row["date"]:
+                        prev_was_data = False
+                        continue  # still no usable date - a genuine stray line
+                    if row["date"]:
+                        prev_date = row["date"]
                     rows.append(row)
                     prev_was_data = True
                 elif prev_was_data and is_continuation(celld) and rows:
