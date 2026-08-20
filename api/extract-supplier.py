@@ -410,6 +410,12 @@ def parse_tables_strategy(pdf):
     rows, warnings = [], []
     found_any = False
     last_col_map, last_id_candidates, last_col_count = None, [], None
+    prev_date = ""  # persists across separate table regions AND pages, since
+                    # a single logical table can get split into multiple
+                    # detected regions (e.g. around a page's mid-content
+                    # boilerplate), and a date-fill-down row right at that
+                    # boundary shouldn't lose its inherited date just
+                    # because pdfplumber happened to see it as a new table.
     for page in pdf.pages:
         for table in page.find_tables():
             table_rows = table.extract()
@@ -450,7 +456,6 @@ def parse_tables_strategy(pdf):
             last_col_map, last_id_candidates, last_col_count = col_map, id_candidates, this_col_count
             found_any = True
             prev_was_data = False
-            prev_date = ""
             for cells in data_rows:
                 cells = [(c or "").replace("\n", " ").strip() for c in cells]
 
