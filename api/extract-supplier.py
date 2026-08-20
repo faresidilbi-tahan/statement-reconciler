@@ -27,12 +27,22 @@ import csv
 import io
 import json
 import re
+
+# pdfplumber extracts right-to-left (Arabic/Hebrew) text runs in reversed
+# character order - this restores correct reading order for just those
+# runs, leaving any interleaved English/numbers/punctuation untouched.
+ARABIC_RUN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F][\u0600-\u06FF\u0750-\u077F\s]*[\u0600-\u06FF\u0750-\u077F]|[\u0600-\u06FF\u0750-\u077F]")
+
+
+def fix_bidi_text(text):
+    return ARABIC_RUN_RE.sub(lambda m: m.group(0)[::-1], text)
+
 import datetime as dt
 
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-20-multi-id-datefill"
+BUILD_TAG = "2026-08-20-crn-arabic"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -72,7 +82,7 @@ MONTH_DATE_RE = re.compile(
     re.IGNORECASE)
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
-REF_RE = re.compile(r"(?:INV|C\s*/?\s*N)\s*[:#]?\s*([\w/-]+)", re.IGNORECASE)
+REF_RE = re.compile(r"(?:INV|C\s*R?\s*/?\s*N)\s*[:#]?\s*([\w/-]+)", re.IGNORECASE)
 
 
 def is_valid_col_map(mapped):
@@ -220,7 +230,7 @@ def build_row(cells, raw_low):
     # it blank on the rest of that batch), and only drops the row if it's
     # still dateless after that - see parse_tables_strategy /
     # parse_words_strategy.
-    desc = cells.get("description", "")
+    desc = fix_bidi_text(cells.get("description", ""))
     return {
         "date": date,
         "id": extract_row_id(cells.get("id", ""), desc) if row_type == "transaction" else "",
