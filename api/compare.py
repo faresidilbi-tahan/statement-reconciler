@@ -39,7 +39,7 @@ def _parse_iso_date(s):
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-20-amt-date-window"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-21-totals"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -355,6 +355,28 @@ def compare(ours_raw, supplier_raw):
     issues.sort(key=lambda r: (r["date"], r["id"]))
     matched_rows.sort(key=lambda r: (r["date"], r["id"]))
 
+    # Net totals for a quick "do the two books roughly agree" check. Debit
+    # and credit are mirrored between the two sides (our credit = their
+    # debit, by the same MIRROR_OK convention used throughout matching),
+    # so "net" here means the same thing on both sides: the net amount
+    # outstanding on this account per that side's own books.
+    #
+    # The supplier total only counts rows within OUR file's date range -
+    # otherwise a supplier statement spanning more months than ours would
+    # show a large "difference" that's really just missing prior-period
+    # data on our side, not a real discrepancy (see id_disregarded above
+    # for the same kind of period-mismatch problem in matching).
+    our_total_debit = round(sum(r["debit"] for r in ours), 2)
+    our_total_credit = round(sum(r["credit"] for r in ours), 2)
+    our_net = round(our_total_credit - our_total_debit, 2)
+
+    supplier_in_range = [supplier[j] for j in range(len(supplier)) if not out_of_our_range(supplier[j])]
+    supplier_total_debit = round(sum(r["debit"] for r in supplier_in_range), 2)
+    supplier_total_credit = round(sum(r["credit"] for r in supplier_in_range), 2)
+    supplier_net = round(supplier_total_debit - supplier_total_credit, 2)
+
+    net_difference = round(our_net - supplier_net, 2)
+
     return {
         "summary": {
             "build_tag": BUILD_TAG,
@@ -368,6 +390,13 @@ def compare(ours_raw, supplier_raw):
             "missing_in_tahan": len(missing_in_tahan),
             "our_date_range": list(our_range) if our_range else None,
             "id_disregarded": id_disregarded,
+            "our_total_debit": our_total_debit,
+            "our_total_credit": our_total_credit,
+            "our_net": our_net,
+            "supplier_total_debit": supplier_total_debit,
+            "supplier_total_credit": supplier_total_credit,
+            "supplier_net": supplier_net,
+            "net_difference": net_difference,
         },
         "issues": issues,
         "matched": matched_rows,
