@@ -91,6 +91,21 @@
     font-size: 14.5px;
     margin-bottom: 14px;
   }
+  #totals {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  #totals table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  #totals th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  #totals td { padding: 5px 10px 5px 0; text-align: right; }
+  #totals td:first-child { text-align: left; font-weight: 600; }
+  #totals .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  #totals .diff-ok { color: var(--green); }
+  #totals .diff-bad { color: var(--red); }
   #warnings {
     display: none;
     border: 1px solid var(--line);
@@ -137,16 +152,17 @@
     main { max-width: none; margin: 0; padding: 0; }
     .table-wrap { border: none; box-shadow: none; overflow: visible; }
     #summary { border: none; padding: 0 0 10px; font-size: 12px; }
-    table { font-size: 9px; width: 100%; table-layout: fixed; }
-    th, td { padding: 4px 5px; word-break: break-word; white-space: normal !important; }
-    th:nth-child(1), td:nth-child(1) { width: 10%; }
-    th:nth-child(2), td:nth-child(2) { width: 9%; }
-    th:nth-child(3), td:nth-child(3) { width: 9%; }
-    th:nth-child(4), td:nth-child(4) { width: 34%; }
-    th:nth-child(5), td:nth-child(5),
-    th:nth-child(6), td:nth-child(6),
-    th:nth-child(7), td:nth-child(7),
-    th:nth-child(8), td:nth-child(8) { width: 9.5%; }
+    #totals { border: none; padding: 0 0 10px; }
+    #tableWrap table { font-size: 9px; width: 100%; table-layout: fixed; }
+    #tableWrap th, #tableWrap td { padding: 4px 5px; word-break: break-word; white-space: normal !important; }
+    #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 10%; }
+    #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
+    #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 9%; }
+    #tableWrap th:nth-child(4), #tableWrap td:nth-child(4) { width: 34%; }
+    #tableWrap th:nth-child(5), #tableWrap td:nth-child(5),
+    #tableWrap th:nth-child(6), #tableWrap td:nth-child(6),
+    #tableWrap th:nth-child(7), #tableWrap td:nth-child(7),
+    #tableWrap th:nth-child(8), #tableWrap td:nth-child(8) { width: 9.5%; }
     td.desc { min-width: 0; }
     .badge { padding: 1px 5px; font-size: 9px; }
   }
@@ -189,6 +205,7 @@
   </div>
 
   <div id="summary"></div>
+  <div id="totals" style="display:none;"></div>
   <div class="downloads" id="downloads" style="display:none;">
     <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
     <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
@@ -397,6 +414,23 @@
       ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>' +
       idNote;
 
+    var totalsEl = document.getElementById('totals');
+    if (s.our_net !== undefined) {
+      totalsEl.style.display = 'block';
+      var diffAbs = Math.abs(s.net_difference);
+      var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
+      var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
+      totalsEl.innerHTML =
+        '<table>' +
+        '<tr><th></th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
+        '<tr><td>Our file</td><td>' + fmt(s.our_total_debit) + '</td><td>' + fmt(s.our_total_credit) + '</td><td>' + fmt(s.our_net) + '</td></tr>' +
+        '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(s.supplier_total_debit) + '</td><td>' + fmt(s.supplier_total_credit) + '</td><td>' + fmt(s.supplier_net) + '</td></tr>' +
+        '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+        '</table>';
+    } else {
+      totalsEl.style.display = 'none';
+    }
+
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
       warnEl.style.display = 'block';
@@ -464,6 +498,7 @@
     }
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
+    document.getElementById('totals').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
     document.getElementById('downloads').style.display = 'none';
@@ -596,6 +631,8 @@
     lastDiffs = [];
     document.getElementById('summary').style.display = 'none';
     document.getElementById('summary').innerHTML = '';
+    document.getElementById('totals').style.display = 'none';
+    document.getElementById('totals').innerHTML = '';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('tbody').innerHTML = '';
     document.getElementById('allclear').style.display = 'none';
