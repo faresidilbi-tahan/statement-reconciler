@@ -145,9 +145,25 @@
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
 
+  #aiVerify { margin-bottom: 14px; }
+  .ai-actions { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  #aiVerifyBtn { background: #fff; color: var(--blue); border: 1px solid var(--blue); padding: 9px 18px; font-size: 13px; }
+  #aiVerifyBtn:hover:enabled { background: #eef4fc; }
+  #aiVerifyBtn:disabled { opacity: .5; cursor: not-allowed; }
+  .ai-status { font-size: 13px; color: var(--muted); }
+  .ai-block { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; font-size: 13.5px; }
+  .ai-block.ai-ok { border-left: 4px solid var(--green); }
+  .ai-block.ai-bad { border-left: 4px solid var(--red); }
+  .ai-block.ai-error { border-left: 4px solid var(--amber); color: var(--amber); }
+  .ai-notes { color: var(--muted); font-size: 12.5px; }
+  .ai-subtitle { font-weight: 600; font-size: 12.5px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .03em; }
+  table.ai-table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-bottom: 4px; }
+  table.ai-table th, table.ai-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+  table.ai-table th { background: #f7f9fb; font-size: 11px; text-transform: uppercase; color: var(--muted); }
+
   @page { size: landscape; margin: 10mm; }
   @media print {
-    .uploads, .filter-row, .actions, .downloads, #warnings { display: none !important; }
+    .uploads, .filter-row, .actions, .downloads, #warnings, #aiVerify { display: none !important; }
     body { background: #fff; }
     main { max-width: none; margin: 0; padding: 0; }
     .table-wrap { border: none; box-shadow: none; overflow: visible; }
@@ -199,13 +215,20 @@
   </div>
 
   <div class="actions">
-    <button id="compareBtn" disabled>Compare (v5 · multi-file+print)</button>
+    <button id="compareBtn" disabled>Compare (v6 · ai-verify)</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
 
   <div id="summary"></div>
   <div id="totals" style="display:none;"></div>
+  <div id="aiVerify" style="display:none;">
+    <div class="ai-actions">
+      <button id="aiVerifyBtn" type="button">AI Verify totals</button>
+      <span class="ai-status" id="aiVerifyStatus"></span>
+    </div>
+    <div id="aiVerifyResults"></div>
+  </div>
   <div class="downloads" id="downloads" style="display:none;">
     <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
     <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
@@ -386,6 +409,26 @@
   var lastMissingOurs = [];      // missing_in_tahan: rows only on supplier side
   var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
   var lastDiffs = [];
+  var verifyState = null;        // AI Verify: per-file base64 + rows kept from the last successful Compare
+
+  function isPdfBase64(b64) {
+    // "%PDF" (0x25 0x50 0x44 0x46) as base64 starts with "JVBER" - cheap
+    // client-side sniff, mirrors the magic-byte check the server does.
+    return !!b64 && b64.indexOf('JVBER') === 0;
+  }
+
+  // Mirrors compare.py's clean(): only real transaction rows with a
+  // non-zero debit or credit count toward the total AI Verify checks.
+  function cleanForTotals(rows) {
+    var debit = 0, credit = 0;
+    (rows || []).forEach(function (r) {
+      if (r.row_type === 'transaction' && ((r.debit || 0) > 0.01 || (r.credit || 0) > 0.01)) {
+        debit += r.debit || 0;
+        credit += r.credit || 0;
+      }
+    });
+    return { debit: Math.round(debit * 100) / 100, credit: Math.round(credit * 100) / 100 };
+  }
 
   function render(result, warnings) {
     var s = result.summary;
@@ -430,6 +473,12 @@
     } else {
       totalsEl.style.display = 'none';
     }
+
+    var aiVerifyEl = document.getElementById('aiVerify');
+    aiVerifyEl.style.display = (s.our_net !== undefined) ? 'block' : 'none';
+    document.getElementById('aiVerifyResults').innerHTML = '';
+    document.getElementById('aiVerifyStatus').textContent = '';
+    document.getElementById('aiVerifyBtn').disabled = false;
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -489,6 +538,135 @@
     document.getElementById('dateTo').value = '';
   });
 
+  // AI Verify: manual, opt-in double-check. Never runs on its own, never
+  // touches extraction/matching. Step 1 (always): ask Claude to read each
+  // eligible PDF directly and independently total debit/credit, compared
+  // against what the deterministic extractor already computed for that
+  // same file. Step 2 (only for files whose totals disagree): ask Claude
+  // to point at the specific rows that look wrong, using the extracted
+  // table as a reference rather than re-parsing blind - this is the
+  // "just whichever file the mismatch points to" behavior: a file whose
+  // AI-read total already matches the extractor is left alone.
+  document.getElementById('aiVerifyBtn').addEventListener('click', function () {
+    if (!verifyState) return;
+    var btn = this;
+    btn.disabled = true;
+    var statusEl = document.getElementById('aiVerifyStatus');
+    var resultsEl = document.getElementById('aiVerifyResults');
+    resultsEl.innerHTML = '';
+    statusEl.textContent = 'Reading PDF(s) with AI…';
+
+    var checks = [];
+    verifyState.ours.forEach(function (f) {
+      checks.push({
+        label: 'Our file' + (verifyState.ours.length > 1 ? ' (' + f.name + ')' : ''),
+        base64: f.base64,
+        rows: f.rows,
+        expected: cleanForTotals(f.rows)
+      });
+    });
+    if (verifyState.supplier.isPdf) {
+      checks.push({
+        label: 'Supplier file',
+        base64: verifyState.supplier.base64,
+        rows: verifyState.supplier.rows,
+        expected: cleanForTotals(verifyState.supplier.rows)
+      });
+    } else {
+      resultsEl.innerHTML += '<div class="ai-block ai-error">Supplier file isn\'t a PDF, so AI Verify skipped it (only PDFs are supported right now).</div>';
+    }
+
+    if (!checks.length) {
+      statusEl.textContent = '';
+      btn.disabled = false;
+      return;
+    }
+
+    function rowsTable(title, rows, cols) {
+      if (!rows || !rows.length) return '';
+      var head = cols.map(function (c) { return '<th>' + esc(c.label) + '</th>'; }).join('');
+      var body = rows.map(function (row) {
+        return '<tr>' + cols.map(function (c) {
+          var v = row[c.key];
+          return '<td>' + (v === undefined || v === null ? '' : esc(v)) + '</td>';
+        }).join('') + '</tr>';
+      }).join('');
+      return '<div class="ai-subtitle">' + esc(title) + '</div><table class="ai-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>';
+    }
+
+    Promise.all(checks.map(function (c) {
+      return post('/api/ai-verify', {
+        pdf_base64: c.base64,
+        mode: 'totals',
+        expected_total_debit: c.expected.debit,
+        expected_total_credit: c.expected.credit
+      }).then(function (r) { c.totalsResult = r; return c; })
+        .catch(function (err) { c.error = err.message; return c; });
+    })).then(function (checked) {
+      statusEl.textContent = '';
+      checked.forEach(function (c) {
+        if (c.error) {
+          resultsEl.innerHTML += '<div class="ai-block ai-error"><strong>' + esc(c.label) + '</strong>: ' + esc(c.error) + '</div>';
+          return;
+        }
+        var r = c.totalsResult;
+        resultsEl.innerHTML +=
+          '<div class="ai-block ' + (r.matches_extractor ? 'ai-ok' : 'ai-bad') + '">' +
+          '<strong>' + esc(c.label) + '</strong> — AI read: ' + fmt(r.ai_total_debit) + ' debit / ' + fmt(r.ai_total_credit) + ' credit' +
+          ' vs. extractor: ' + fmt(r.expected_total_debit) + ' debit / ' + fmt(r.expected_total_credit) + ' credit — ' +
+          (r.matches_extractor ? 'matches.' : '<strong>mismatch.</strong>') +
+          (r.notes ? ' <span class="ai-notes">' + esc(r.notes) + '</span>' : '') +
+          '</div>';
+      });
+
+      var mismatched = checked.filter(function (c) { return c.totalsResult && !c.totalsResult.matches_extractor; });
+      if (!mismatched.length) {
+        btn.disabled = false;
+        return null;
+      }
+
+      statusEl.textContent = 'Totals disagree — asking AI to point at specific rows…';
+      return Promise.all(mismatched.map(function (c) {
+        return post('/api/ai-verify', { pdf_base64: c.base64, mode: 'rows', rows: c.rows })
+          .then(function (r) { c.rowsResult = r; return c; })
+          .catch(function (err) { c.rowsError = err.message; return c; });
+      })).then(function () {
+        statusEl.textContent = '';
+        mismatched.forEach(function (c) {
+          var html = '<div class="ai-block ai-rows"><strong>' + esc(c.label) + ' — row-level detail</strong>';
+          if (c.rowsError) {
+            html += '<div class="ai-notes">' + esc(c.rowsError) + '</div></div>';
+            resultsEl.innerHTML += html;
+            return;
+          }
+          var rr = c.rowsResult || {};
+          var before = html;
+          html += rowsTable('Amounts that look wrong', rr.suspect_rows, [
+            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' },
+            { key: 'extracted_debit', label: 'Extracted debit' }, { key: 'extracted_credit', label: 'Extracted credit' },
+            { key: 'correct_debit', label: 'AI says debit' }, { key: 'correct_credit', label: 'AI says credit' },
+            { key: 'note', label: 'Note' }
+          ]);
+          html += rowsTable('In the PDF but missing from extraction', rr.missing_rows, [
+            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'description', label: 'Description' },
+            { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Credit' }
+          ]);
+          html += rowsTable('Extracted but not found in the PDF', rr.spurious_rows, [
+            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'note', label: 'Note' }
+          ]);
+          if (html === before) html += '<div class="ai-notes">AI confirmed the totals mismatch but couldn\'t pin it to specific rows — worth a manual look.</div>';
+          html += '</div>';
+          resultsEl.innerHTML += html;
+        });
+      });
+    }).catch(function (err) {
+      statusEl.textContent = '';
+      resultsEl.innerHTML += '<div class="ai-block ai-error">' + esc(err.message) + '</div>';
+    }).finally(function () {
+      btn.disabled = false;
+    });
+  });
+
   document.getElementById('compareBtn').addEventListener('click', function () {
     var btn = this;
     if (!files.ours.length || !files.supplier) {
@@ -499,6 +677,10 @@
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
     document.getElementById('totals').style.display = 'none';
+    document.getElementById('aiVerify').style.display = 'none';
+    document.getElementById('aiVerifyResults').innerHTML = '';
+    document.getElementById('aiVerifyStatus').textContent = '';
+    verifyState = null;
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
     document.getElementById('downloads').style.display = 'none';
@@ -507,6 +689,7 @@
 
     var dateFrom = document.getElementById('dateFrom').value;
     var dateTo = document.getElementById('dateTo').value;
+    var oursB64ListCaptured = null, supplierB64Captured = null;
 
     Promise.all([
       Promise.all(files.ours.map(toBase64)),
@@ -517,6 +700,8 @@
         if (oursB64List.some(function (b) { return !b; }) || !supplierB64) {
           throw new Error('One of the files could not be read - please re-select it and try again.');
         }
+        oursB64ListCaptured = oursB64List;
+        supplierB64Captured = supplierB64;
         setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the supplier statement…');
         return Promise.all([
           Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
@@ -546,6 +731,27 @@
           'extractor builds: ours=' + (oursBuildTag || 'unknown') +
           ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
+
+        // Keep what AI Verify needs on hand: each our-file's own base64 +
+        // its own filtered rows (so per-file totals can be checked
+        // individually), and the supplier's base64 + rows + whether it's
+        // even a PDF (AI Verify only supports PDF for now).
+        verifyState = {
+          ours: oursResultsList.map(function (r, idx) {
+            return {
+              name: files.ours[idx].name,
+              base64: oursB64ListCaptured[idx],
+              rows: filterRowsByDate(r.rows, dateFrom, dateTo)
+            };
+          }),
+          supplier: {
+            name: files.supplier.name,
+            base64: supplierB64Captured,
+            rows: supplierRows,
+            isPdf: isPdfBase64(supplierB64Captured)
+          }
+        };
+
         return post('/api/compare', { ours: oursRows, supplier: supplierRows })
           .then(function (cmp) { render(cmp, oursWarningsAll); });
       })
