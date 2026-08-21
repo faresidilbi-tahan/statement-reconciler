@@ -42,32 +42,32 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-20-crn-arabic"
+BUILD_TAG = "2026-08-20-vnum-priority"
 
 # ------------------------------------------------------------ shared vocab
 
 COLUMN_KEYWORDS = {
     "date": ["date", "invc", "تاريخ", "التاريخ"],
-    "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "doc",
+    "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "vnum", "doc",
            "document", "no", "number", "num", "trx", "nb", "id", "check",
            "chk", "cheque", "رقم", "سند", "مستند", "فاتورة", "المرجع", "مرجع"],
     "description": ["description", "details", "narration", "particulars",
-                    "memo", "remarks", "بيان", "البيان", "التفاصيل",
+                    "memo", "remarks", "name", "بيان", "البيان", "التفاصيل",
                     "الوصف", "ملاحظات"],
-    "debit": ["debit", "dr", "مدين"],
-    "credit": ["credit", "cr", "دائن"],
-    "balance": ["balance", "رصيد", "الرصيد"],
+    "debit": ["debit", "debitcu", "dr", "مدين"],
+    "credit": ["credit", "creditcu", "cr", "دائن"],
+    "balance": ["balance", "balcu", "bal", "رصيد", "الرصيد"],
 }
 
 # id-like columns ranked by how reliably they match OUR invoice numbers;
 # used only for spreadsheet parsing, where several id columns can coexist
 # on one row (e.g. "Trans Id", "Invoice number", "Check Num" all at once)
-ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "check", "chk", "cheque",
+ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "vnum", "check", "chk", "cheque",
                        "doc", "document", "trx", "id",
                        "ref", "reference",
                        "no", "number", "num", "nb"]
 
-OPENING_WORDS = ("opening", "b/f", "b.f", "brought", "balance until",
+OPENING_WORDS = ("opening", "b/f", "b.f", "brf", "brought", "balance until",
                  "افتتاحي", "سابق", "مدور", "رصيد اول")
 CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand", "movement",
                  "ending balance", "end date", "balance as at",
@@ -99,6 +99,21 @@ def is_valid_col_map(mapped):
     return len(set(mapped.values())) >= 3
 
 
+def undouble_chars(word):
+    """Some PDF exports fake a bold header by drawing each character
+    twice at a near-identical position, which pdfplumber's text
+    extraction reads as every character literally repeated ('Number'
+    becomes 'NNuummbbeerr'). Detect that specific pattern within a single
+    whitespace-separated word and collapse it back to the original -
+    ordinary text (including genuine double letters like 'Statement')
+    won't match this check and passes through unchanged."""
+    if len(word) < 2 or len(word) % 2 != 0:
+        return word
+    if all(word[i] == word[i + 1] for i in range(0, len(word), 2)):
+        return word[0::2]
+    return word
+
+
 def match_column(text):
     t = str(text or "").strip().lower().strip(":.")
     for col, words in COLUMN_KEYWORDS.items():
@@ -108,6 +123,13 @@ def match_column(text):
     for col, words in COLUMN_KEYWORDS.items():
         if any(p in words for p in parts):
             return col
+    # retry against a de-doubled version, in case this cell hit the
+    # fake-bold rendering artifact described above
+    fixed_parts = [undouble_chars(p) for p in parts]
+    if fixed_parts != parts:
+        for col, words in COLUMN_KEYWORDS.items():
+            if any(p in words for p in fixed_parts):
+                return col
     return None
 
 
@@ -118,6 +140,12 @@ def id_column_rank(header_text):
     for i, kw in enumerate(ID_COLUMN_PRIORITY):
         if kw in t:
             return i
+    # retry against a de-doubled version (see undouble_chars / match_column)
+    t_fixed = " ".join(undouble_chars(p) for p in t.split())
+    if t_fixed != t:
+        for i, kw in enumerate(ID_COLUMN_PRIORITY):
+            if kw in t_fixed:
+                return i
     return len(ID_COLUMN_PRIORITY)
 
 
@@ -164,15 +192,20 @@ def detect_date_convention(text):
     return "MDY" if mdy_evidence > dmy_evidence else "DMY"
 
 
-def find_date(text):
-    """Search a cell for a date in 'Jan 12, 2026' or numeric form -> ISO."""
+def extract_and_strip_date(text):
+    """Find a date anywhere in text, returning (iso_date_or_None,
+    remaining_text_with_the_date_removed). Used both by find_date() and by
+    the "no separate date column" fallback in build_row(), where a date
+    that shares a column with other fields (id, type code, etc.) needs to
+    be pulled out before the rest of that cell's content can be parsed."""
     text = str(text or "")
     m = MONTH_DATE_RE.search(text)
     if m:
         mo = MONTHS[m.group(1).lower()[:3]]
         d, y = int(m.group(2)), int(m.group(3))
         if 1 <= d <= 31:
-            return f"{y:04d}-{mo:02d}-{d:02d}"
+            remaining = (text[:m.start()] + text[m.end():]).strip()
+            return f"{y:04d}-{mo:02d}-{d:02d}", remaining
     m = NUM_DATE_RE.search(text)
     if m:
         a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -189,8 +222,15 @@ def find_date(text):
         if y < 100:
             y += 2000
         if 1 <= d <= 31 and 1 <= mo <= 12 and 1900 < y < 2100:
-            return f"{y:04d}-{mo:02d}-{d:02d}"
-    return None
+            remaining = (text[:m.start()] + text[m.end():]).strip()
+            return f"{y:04d}-{mo:02d}-{d:02d}", remaining
+    return None, text
+
+
+def find_date(text):
+    """Search a cell for a date in 'Jan 12, 2026' or numeric form -> ISO."""
+    date, _ = extract_and_strip_date(text)
+    return date
 
 
 def extract_row_id(id_cell, description):
@@ -211,6 +251,17 @@ def extract_row_id(id_cell, description):
 
 def build_row(cells, raw_low):
     date = find_date(cells.get("date", "")) or ""
+    # Some suppliers don't print a separate "Date" column header at all -
+    # the date is just an unlabeled leading field that ends up sharing
+    # whatever column comes first (often "id"). When there's genuinely no
+    # dedicated date column, search for an embedded date there instead,
+    # and strip it out so it doesn't pollute id extraction afterward.
+    if not date and not cells.get("date") and cells.get("id"):
+        found_date, remainder = extract_and_strip_date(cells["id"])
+        if found_date:
+            date = found_date
+            cells = dict(cells)
+            cells["id"] = remainder
     debit = parse_amount(cells.get("debit", "")) if cells.get("debit", "") != "" else None
     credit = parse_amount(cells.get("credit", "")) if cells.get("credit", "") != "" else None
     balance = parse_amount(cells.get("balance", "")) if cells.get("balance", "") != "" else None
@@ -478,6 +529,20 @@ def parse_tables_strategy(pdf):
                     prev_was_data = False
                     continue
                 row = build_row(celld, raw_low)
+                if row and not row["date"] and row["row_type"] == "transaction":
+                    # The winning id column is correct but has no date in
+                    # it - some layouts put date+type combined in a
+                    # DIFFERENT, lower-priority id-like column (e.g. a
+                    # "Number" column that's actually date+type, while the
+                    # real invoice number lives in "Vnum"). Scan every
+                    # other id-candidate cell for an embedded date before
+                    # giving up.
+                    for _, idx in id_candidates:
+                        if idx < len(cells) and cells[idx]:
+                            found_date, _ = extract_and_strip_date(cells[idx])
+                            if found_date:
+                                row["date"] = found_date
+                                break
                 if row:
                     # Some suppliers print the date once per batch of line
                     # items and leave it blank on subsequent lines in that
