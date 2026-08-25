@@ -27,11 +27,11 @@ def fix_bidi_text(text):
 
 import pdfplumber
 
-BUILD_TAG = "2026-08-14-cn-ref"
+BUILD_TAG = "2026-08-26-2letter-type-code"
 
 DATE_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
 COBR_RE = re.compile(r"^([A-Za-z]{2})(\d{2})$")
-TYPEOTL_RE = re.compile(r"^([A-Za-z]{3})(\d{1,3})(\S*)$")
+TYPEOTL_RE = re.compile(r"^([A-Za-z]{2,4})(\d{1,3})(\S*)$")
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
 PURE_DIGITS_RE = re.compile(r"^[\d\s./,\-]+$")
 INV_ID_RE = re.compile(r"(?:inv\s*#|c\s*r?\s*/?\s*n\s*#)\s*(\d+)", re.IGNORECASE)
@@ -165,7 +165,7 @@ def parse_leading_fields(tokens):
         if i < n and re.fullmatch(r"[\w\-/]+", tokens[i]):
             vchno = tokens[i]
             i += 1
-    elif re.fullmatch(r"[A-Za-z]{3}", tokens[i]):   # all separate
+    elif re.fullmatch(r"[A-Za-z]{2,4}", tokens[i]):   # all separate
         ttype = tokens[i]
         i += 1
         otl = ""
