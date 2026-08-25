@@ -22,9 +22,10 @@ Two modes, chosen by "mode" in the request body:
     flag specific rows that look wrong or missing, rather than re-parsing
     the whole document blind.
 
-Requires ANTHROPIC_API_KEY in this Vercel project's environment variables
-(Project Settings -> Environment Variables -> redeploy). No extra pip
-dependency - talks to the Anthropic API directly over HTTPS.
+Requires an "accounting_api" environment variable in this Vercel project
+holding a valid Anthropic API key (Project Settings -> Environment
+Variables -> redeploy). No extra pip dependency - talks to the Anthropic
+API directly over HTTPS.
 """
 
 from http.server import BaseHTTPRequestHandler
@@ -35,7 +36,8 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-21-ai-verify-v1"
+BUILD_TAG = "2026-08-25-ai-verify-v2-accounting_api"
+API_KEY_ENV_VAR = "accounting_api"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-5"
@@ -99,7 +101,7 @@ def call_claude(pdf_bytes, prompt_text):
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "x-api-key": os.environ.get("ANTHROPIC_API_KEY", ""),
+            "x-api-key": os.environ.get(API_KEY_ENV_VAR, ""),
             "anthropic-version": "2023-06-01",
         },
         method="POST",
@@ -127,11 +129,11 @@ class handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
 
-            if not os.environ.get("ANTHROPIC_API_KEY"):
+            if not os.environ.get(API_KEY_ENV_VAR):
                 return self._send(400, {
-                    "error": "ANTHROPIC_API_KEY is not set in this Vercel project's "
-                             "environment variables. Add it under Project Settings -> "
-                             "Environment Variables, then redeploy."
+                    "error": "\"{}\" is not set in this Vercel project's environment "
+                             "variables (or has no value). Add it under Project "
+                             "Settings -> Environment Variables, then redeploy.".format(API_KEY_ENV_VAR)
                 })
 
             b64 = data.get("pdf_base64", "")
