@@ -36,7 +36,7 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-25-ai-verify-v2-accounting_api"
+BUILD_TAG = "2026-08-25-ai-verify-v3-apply-fix"
 API_KEY_ENV_VAR = "accounting_api"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -75,10 +75,10 @@ If there are no issues at all in a category, return an empty array for it.
 """
 
 
-def call_claude(pdf_bytes, prompt_text):
+def call_claude(pdf_bytes, prompt_text, max_tokens=4096):
     payload = {
         "model": MODEL,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens,
         "messages": [
             {
                 "role": "user",
@@ -108,11 +108,34 @@ def call_claude(pdf_bytes, prompt_text):
     )
     with urllib.request.urlopen(req, timeout=55) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    text_parts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
+
+    text_parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
     raw = "".join(text_parts).strip()
+
+    if not raw:
+        # Something came back with no usable text - surface the real cause
+        # (e.g. hit max_tokens before writing anything, or a refusal)
+        # instead of letting json.loads("") throw an opaque error.
+        stop_reason = data.get("stop_reason", "unknown")
+        raise ValueError(
+            "Claude returned no text content (stop_reason={}). This usually means "
+            "max_tokens was too low for this document/row count - try again, or "
+            "shrink the row set.".format(stop_reason)
+        )
+
     # Strip markdown fences in case the model adds them despite instructions.
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Last resort: the model may have added a sentence of preamble/
+        # trailing commentary around the JSON object - pull out the
+        # outermost {...} block and try again before giving up.
+        m = re.search(r"\{.*\}", raw, re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise
+
 
 
 class handler(BaseHTTPRequestHandler):
@@ -148,7 +171,7 @@ class handler(BaseHTTPRequestHandler):
             if mode == "totals":
                 expected_debit = float(data.get("expected_total_debit", 0) or 0)
                 expected_credit = float(data.get("expected_total_credit", 0) or 0)
-                result = call_claude(pdf_bytes, TOTALS_PROMPT)
+                result = call_claude(pdf_bytes, TOTALS_PROMPT, max_tokens=600)
                 ai_debit = float(result.get("total_debit", 0) or 0)
                 ai_credit = float(result.get("total_credit", 0) or 0)
                 matches = (
@@ -182,7 +205,7 @@ class handler(BaseHTTPRequestHandler):
                     rows_json=json.dumps(slim_rows, ensure_ascii=False),
                     tolerance="${:.2f}".format(AMOUNT_TOLERANCE),
                 )
-                result = call_claude(pdf_bytes, prompt)
+                result = call_claude(pdf_bytes, prompt, max_tokens=8000)
                 result["build_tag"] = BUILD_TAG
                 return self._send(200, result)
 
