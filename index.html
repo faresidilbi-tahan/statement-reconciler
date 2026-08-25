@@ -160,6 +160,9 @@
   table.ai-table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-bottom: 4px; }
   table.ai-table th, table.ai-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
   table.ai-table th { background: #f7f9fb; font-size: 11px; text-transform: uppercase; color: var(--muted); }
+  .ai-apply-btn { background: var(--green); color: #fff; padding: 8px 16px; font-size: 12.5px; margin-top: 10px; }
+  .ai-apply-btn:hover:enabled { opacity: .9; }
+  .ai-apply-btn:disabled { opacity: .5; cursor: not-allowed; }
 
   @page { size: landscape; margin: 10mm; }
   @media print {
@@ -215,7 +218,7 @@
   </div>
 
   <div class="actions">
-    <button id="compareBtn" disabled>Compare (v6 · ai-verify)</button>
+    <button id="compareBtn" disabled>Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -410,6 +413,7 @@
   var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
   var lastDiffs = [];
   var verifyState = null;        // AI Verify: per-file base64 + rows kept from the last successful Compare
+  var lastOursWarnings = [];     // reused when re-rendering after an "Apply AI corrections" pass
 
   function isPdfBase64(b64) {
     // "%PDF" (0x25 0x50 0x44 0x46) as base64 starts with "JVBER" - cheap
@@ -428,6 +432,74 @@
       }
     });
     return { debit: Math.round(debit * 100) / 100, credit: Math.round(credit * 100) / 100 };
+  }
+
+  function runCompareAndRender(oursRowsForCompare, supplierRowsForCompare, warnings) {
+    return post('/api/compare', { ours: oursRowsForCompare, supplier: supplierRowsForCompare })
+      .then(function (cmp) { render(cmp, warnings); });
+  }
+
+  function rebuildOursRows() {
+    var all = [];
+    (verifyState.ours || []).forEach(function (f) { all = all.concat(f.rows); });
+    return all;
+  }
+
+  function normId(v) { return (v === undefined || v === null ? '' : String(v)).trim().toLowerCase(); }
+
+  function findRowIndex(rows, date, id) {
+    var nid = normId(id);
+    var idx = rows.findIndex(function (r) { return r.date === date && normId(r.id) === nid; });
+    if (idx !== -1) return idx;
+    if (nid) {
+      idx = rows.findIndex(function (r) { return normId(r.id) === nid; });
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  }
+
+  // Takes the row-level AI Verify result (suspect/missing/spurious rows)
+  // and actually applies it to a row array: overwrite wrong amounts, add
+  // rows the PDF has but extraction missed, drop rows the PDF doesn't
+  // support. This is a session-only correction to the data feeding the
+  // comparison - it does not change the underlying PDF parser. If the
+  // same supplier keeps needing this, that's a sign the extractor itself
+  // has a bug worth fixing properly (same testing methodology as every
+  // other supplier fix: get the real file, find the root cause, fix it
+  // generally, regression test).
+  function applyAiCorrections(rows, rr) {
+    var updated = rows.slice();
+    var applied = { fixed: 0, added: 0, removed: 0 };
+
+    (rr.suspect_rows || []).forEach(function (s) {
+      var idx = findRowIndex(updated, s.date, s.id);
+      if (idx === -1) return;
+      var row = Object.assign({}, updated[idx]);
+      if (s.correct_debit !== undefined && s.correct_debit !== null) row.debit = Number(s.correct_debit) || 0;
+      if (s.correct_credit !== undefined && s.correct_credit !== null) row.credit = Number(s.correct_credit) || 0;
+      updated[idx] = row;
+      applied.fixed++;
+    });
+
+    (rr.spurious_rows || []).forEach(function (s) {
+      var idx = findRowIndex(updated, s.date, s.id);
+      if (idx !== -1) { updated.splice(idx, 1); applied.removed++; }
+    });
+
+    (rr.missing_rows || []).forEach(function (m) {
+      updated.push({
+        date: m.date || '',
+        id: m.id || '',
+        description: m.description || '(added by AI Verify)',
+        debit: Number(m.debit) || 0,
+        credit: Number(m.credit) || 0,
+        balance: 0,
+        row_type: 'transaction'
+      });
+      applied.added++;
+    });
+
+    return { rows: updated, applied: applied };
   }
 
   function render(result, warnings) {
@@ -557,12 +629,13 @@
     statusEl.textContent = 'Reading PDF(s) with AI…';
 
     var checks = [];
-    verifyState.ours.forEach(function (f) {
+    verifyState.ours.forEach(function (f, idx) {
       checks.push({
         label: 'Our file' + (verifyState.ours.length > 1 ? ' (' + f.name + ')' : ''),
         base64: f.base64,
         rows: f.rows,
-        expected: cleanForTotals(f.rows)
+        expected: cleanForTotals(f.rows),
+        target: { kind: 'ours', idx: idx }
       });
     });
     if (verifyState.supplier.isPdf) {
@@ -570,7 +643,8 @@
         label: 'Supplier file',
         base64: verifyState.supplier.base64,
         rows: verifyState.supplier.rows,
-        expected: cleanForTotals(verifyState.supplier.rows)
+        expected: cleanForTotals(verifyState.supplier.rows),
+        target: { kind: 'supplier' }
       });
     } else {
       resultsEl.innerHTML += '<div class="ai-block ai-error">Supplier file isn\'t a PDF, so AI Verify skipped it (only PDFs are supported right now).</div>';
@@ -633,30 +707,74 @@
       })).then(function () {
         statusEl.textContent = '';
         mismatched.forEach(function (c) {
-          var html = '<div class="ai-block ai-rows"><strong>' + esc(c.label) + ' — row-level detail</strong>';
+          var container = document.createElement('div');
+          container.className = 'ai-block ai-rows';
+          var header = '<strong>' + esc(c.label) + ' — row-level detail</strong>';
+
           if (c.rowsError) {
-            html += '<div class="ai-notes">' + esc(c.rowsError) + '</div></div>';
-            resultsEl.innerHTML += html;
+            container.innerHTML = header + '<div class="ai-notes">' + esc(c.rowsError) + '</div>';
+            resultsEl.appendChild(container);
             return;
           }
+
           var rr = c.rowsResult || {};
-          var before = html;
-          html += rowsTable('Amounts that look wrong', rr.suspect_rows, [
-            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' },
-            { key: 'extracted_debit', label: 'Extracted debit' }, { key: 'extracted_credit', label: 'Extracted credit' },
-            { key: 'correct_debit', label: 'AI says debit' }, { key: 'correct_credit', label: 'AI says credit' },
-            { key: 'note', label: 'Note' }
-          ]);
-          html += rowsTable('In the PDF but missing from extraction', rr.missing_rows, [
-            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'description', label: 'Description' },
-            { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Credit' }
-          ]);
-          html += rowsTable('Extracted but not found in the PDF', rr.spurious_rows, [
-            { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'note', label: 'Note' }
-          ]);
-          if (html === before) html += '<div class="ai-notes">AI confirmed the totals mismatch but couldn\'t pin it to specific rows — worth a manual look.</div>';
-          html += '</div>';
-          resultsEl.innerHTML += html;
+          var tables =
+            rowsTable('Amounts that look wrong', rr.suspect_rows, [
+              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' },
+              { key: 'extracted_debit', label: 'Extracted debit' }, { key: 'extracted_credit', label: 'Extracted credit' },
+              { key: 'correct_debit', label: 'AI says debit' }, { key: 'correct_credit', label: 'AI says credit' },
+              { key: 'note', label: 'Note' }
+            ]) +
+            rowsTable('In the PDF but missing from extraction', rr.missing_rows, [
+              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'description', label: 'Description' },
+              { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Credit' }
+            ]) +
+            rowsTable('Extracted but not found in the PDF', rr.spurious_rows, [
+              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'note', label: 'Note' }
+            ]);
+
+          var hasAny = (rr.suspect_rows && rr.suspect_rows.length) ||
+                       (rr.missing_rows && rr.missing_rows.length) ||
+                       (rr.spurious_rows && rr.spurious_rows.length);
+
+          container.innerHTML = header + (tables ||
+            '<div class="ai-notes">AI confirmed the totals mismatch but couldn\'t pin it to specific rows — worth a manual look.</div>');
+
+          if (hasAny) {
+            var applyBtn = document.createElement('button');
+            applyBtn.type = 'button';
+            applyBtn.className = 'ai-apply-btn';
+            applyBtn.textContent = 'Apply AI corrections & re-compare';
+            var applyStatus = document.createElement('span');
+            applyStatus.className = 'ai-notes';
+            applyStatus.style.marginLeft = '10px';
+            container.appendChild(applyBtn);
+            container.appendChild(applyStatus);
+
+            applyBtn.addEventListener('click', function () {
+              applyBtn.disabled = true;
+              applyStatus.textContent = 'Applying and re-comparing…';
+              var result = applyAiCorrections(c.rows, rr);
+              if (c.target.kind === 'ours') {
+                verifyState.ours[c.target.idx].rows = result.rows;
+              } else {
+                verifyState.supplier.rows = result.rows;
+              }
+              runCompareAndRender(rebuildOursRows(), verifyState.supplier.rows, lastOursWarnings)
+                .then(function () {
+                  setStatus('Done. Applied ' + result.applied.fixed + ' fix' + (result.applied.fixed === 1 ? '' : 'es') +
+                    (result.applied.added ? ', added ' + result.applied.added + ' row' + (result.applied.added === 1 ? '' : 's') : '') +
+                    (result.applied.removed ? ', removed ' + result.applied.removed + ' row' + (result.applied.removed === 1 ? '' : 's') : '') +
+                    ' from ' + c.label.toLowerCase() + '. Re-run AI Verify to confirm the totals now agree.');
+                })
+                .catch(function (err) {
+                  applyStatus.textContent = 'Re-compare failed: ' + err.message;
+                  applyBtn.disabled = false;
+                });
+            });
+          }
+
+          resultsEl.appendChild(container);
         });
       });
     }).catch(function (err) {
@@ -731,6 +849,7 @@
           'extractor builds: ours=' + (oursBuildTag || 'unknown') +
           ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
+        lastOursWarnings = oursWarningsAll;
 
         // Keep what AI Verify needs on hand: each our-file's own base64 +
         // its own filtered rows (so per-file totals can be checked
@@ -752,8 +871,7 @@
           }
         };
 
-        return post('/api/compare', { ours: oursRows, supplier: supplierRows })
-          .then(function (cmp) { render(cmp, oursWarningsAll); });
+        return runCompareAndRender(oursRows, supplierRows, oursWarningsAll);
       })
       .then(function () { setStatus('Done.'); })
       .catch(function (err) { setStatus(err.message, true); })
