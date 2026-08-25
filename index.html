@@ -117,13 +117,21 @@
     white-space: pre-wrap;
   }
 
-  .table-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: none; }
-  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-  th, td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
-  td.desc { white-space: normal; min-width: 220px; }
-  th { background: #f0f3f7; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); position: sticky; top: 0; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr:last-child td { border-bottom: 0; }
+  .table-wrap { overflow-x: hidden; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: none; }
+  #tableWrap table { border-collapse: collapse; width: 100%; font-size: 11.5px; table-layout: fixed; }
+  #tableWrap th, #tableWrap td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: normal; word-break: break-word; overflow-wrap: break-word; vertical-align: top; }
+  #tableWrap td.desc { white-space: normal; }
+  #tableWrap th { background: #f0f3f7; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
+  #tableWrap td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #tableWrap tr:last-child td { border-bottom: 0; }
+  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 10%; }
+  #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
+  #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 9%; }
+  #tableWrap th:nth-child(4), #tableWrap td:nth-child(4) { width: 30%; }
+  #tableWrap th:nth-child(5), #tableWrap td:nth-child(5),
+  #tableWrap th:nth-child(6), #tableWrap td:nth-child(6),
+  #tableWrap th:nth-child(7), #tableWrap td:nth-child(7),
+  #tableWrap th:nth-child(8), #tableWrap td:nth-child(8) { width: 10.5%; }
 
   .badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 700; }
   .badge.missing_in_supplier { background: #fdecea; color: var(--red); }
@@ -218,7 +226,8 @@
   </div>
 
   <div class="actions">
-    <button id="compareBtn" disabled>Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-table-fit-no-scroll -->
+    <button id="compareBtn" disabled data-build="2026-08-26-table-fit-no-scroll">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
