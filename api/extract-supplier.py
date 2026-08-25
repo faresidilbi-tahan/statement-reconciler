@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-20-vnum-priority"
+BUILD_TAG = "2026-08-26-positional-header-check"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -356,6 +356,16 @@ def assign_columns(line, intervals):
     return {col: " ".join(v).strip() for col, v in cells.items()}
 
 
+def word_column(w, intervals):
+    """Which column a word's x-position actually falls into, per the same
+    intervals assign_columns() uses."""
+    center = (w["x0"] + w["x1"]) / 2.0
+    for col, left, right in intervals:
+        if left <= center < right:
+            return col
+    return None
+
+
 def parse_words_strategy(pdf):
     rows, warnings = [], []
     anchors = None
@@ -375,7 +385,21 @@ def parse_words_strategy(pdf):
             if not raw:
                 continue
             raw_low = raw.lower()
-            header_hits = sum(1 for w in line if match_column(w["text"]))
+            # A repeated header line has its keyword words sitting in the
+            # SAME columns those keywords represent (e.g. "Debit" printed
+            # at the debit column's x-position). Matching by keyword alone
+            # is not enough - a data row's Type code or description can
+            # legitimately contain header vocabulary too (e.g. a supplier
+            # whose transaction type is literally "INV", or whose
+            # description reads "INV No. 12345" - "inv"/"no" both match
+            # the id-column keyword list even though they're sitting in
+            # the type/description columns, not the id column). Only count
+            # a hit when the word's actual x-position column agrees with
+            # what the keyword implies.
+            header_hits = sum(
+                1 for w in line
+                if match_column(w["text"]) and match_column(w["text"]) == word_column(w, intervals)
+            )
             if header_hits >= 3:
                 prev_was_data = False
                 continue
