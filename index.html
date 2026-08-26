@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-ai-explain-difference -->
-    <button id="compareBtn" disabled data-build="2026-08-26-ai-explain-difference">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-surface-ai-errors -->
+    <button id="compareBtn" disabled data-build="2026-08-26-surface-ai-errors">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -644,7 +644,7 @@
       var narrEl = document.getElementById('bridgeNarrative');
       if (!narrEl) return;
       narrEl.innerHTML = esc(fallbackSentence(s, bridge.groups)) +
-        ' <span style="color:#999;" title="' + esc(err.message) + '">(AI explanation unavailable)</span>';
+        ' <span style="color:#b26a00;">(AI explanation unavailable: ' + esc(err.message) + ')</span>';
     });
   }
 
