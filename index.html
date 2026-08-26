@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-surface-ai-errors -->
-    <button id="compareBtn" disabled data-build="2026-08-26-surface-ai-errors">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-ai-totals -->
+    <button id="compareBtn" disabled data-build="2026-08-26-ai-totals">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -435,6 +435,70 @@
   var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
   var lastDiffs = [];
 
+  // Renders the Debit/Credit/Net table. "aiState" is null while the AI
+  // totals call hasn't run yet, 'ok' once AI's own sum landed within $1 of
+  // the exact deterministic total (safe to trust/display), or 'fallback'
+  // if AI's sum drifted too far - in that case we show the exact numbers
+  // regardless of what AI said, with a visible note, rather than ever
+  // presenting an unverified AI sum as fact on a financial tool.
+  function renderTotalsTable(s, ourDebit, ourCredit, ourNet, supDebit, supCredit, supNet, aiState) {
+    var diffAbs = Math.abs(s.net_difference);
+    var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
+    var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
+    var badge =
+      aiState === 'ok' ? ' <span style="color:var(--green);font-weight:400;font-size:11px;">✓ AI-computed</span>' :
+      aiState === 'fallback' ? ' <span style="color:var(--amber);font-weight:400;font-size:11px;" title="AI\'s own total didn\'t match the source data closely enough, showing exact numbers instead">⚠ AI total differed, showing exact</span>' :
+      aiState === 'pending' ? ' <span style="color:#999;font-weight:400;font-size:11px;">computing with AI…</span>' :
+      aiState === 'error' ? ' <span style="color:#999;font-weight:400;font-size:11px;">(AI unavailable, showing exact)</span>' : '';
+    document.getElementById('totals').innerHTML =
+      '<table>' +
+      '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
+      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + '</td></tr>' +
+      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(supDebit) + '</td><td>' + fmt(supCredit) + '</td><td>' + fmt(supNet) + '</td></tr>' +
+      '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+      '</table>';
+  }
+
+  // Runs automatically after every Compare with totals, using only the
+  // already-extracted row numbers (no PDFs re-sent) on the cheapest model
+  // with a capped response - keeps each call to a small fraction of a
+  // cent. The exact deterministic totals from compare.py are always kept
+  // as the source of truth in the background; AI's totals only replace
+  // the display when they land within $1 of that exact figure.
+  function requestAiTotals(s, matched, issues) {
+    renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+      s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'pending');
+
+    var ourRows = [], supplierRows = [];
+    matched.concat(issues).forEach(function (r) {
+      ourRows.push({ date: r.date, id: r.our_id !== undefined ? r.our_id : r.id, debit: r.our_debit, credit: r.our_credit });
+      supplierRows.push({ date: r.date, id: r.supplier_id !== undefined ? r.supplier_id : r.id, debit: r.supplier_debit, credit: r.supplier_credit });
+    });
+
+    post('/api/ai-totals', { our_rows: ourRows, supplier_rows: supplierRows })
+      .then(function (r) {
+        var aiOurDebit = Number(r.our_total_debit), aiOurCredit = Number(r.our_total_credit);
+        var aiSupDebit = Number(r.supplier_total_debit), aiSupCredit = Number(r.supplier_total_credit);
+        var aiOurNet = Math.round((aiOurCredit - aiOurDebit) * 100) / 100;
+        var aiSupNet = Math.round((aiSupDebit - aiSupCredit) * 100) / 100;
+
+        var closeEnough =
+          Math.abs(aiOurDebit - s.our_total_debit) <= 1 && Math.abs(aiOurCredit - s.our_total_credit) <= 1 &&
+          Math.abs(aiSupDebit - s.supplier_total_debit) <= 1 && Math.abs(aiSupCredit - s.supplier_total_credit) <= 1;
+
+        if (closeEnough) {
+          renderTotalsTable(s, aiOurDebit, aiOurCredit, aiOurNet, aiSupDebit, aiSupCredit, aiSupNet, 'ok');
+        } else {
+          renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+            s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'fallback');
+        }
+      })
+      .catch(function () {
+        renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+          s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'error');
+      });
+  }
+
   function render(result, warnings) {
     var s = result.summary;
     var issues = result.issues || [];
@@ -465,16 +529,9 @@
     var totalsEl = document.getElementById('totals');
     if (s.our_net !== undefined) {
       totalsEl.style.display = 'block';
-      var diffAbs = Math.abs(s.net_difference);
-      var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
-      var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
-      totalsEl.innerHTML =
-        '<table>' +
-        '<tr><th></th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
-        '<tr><td>Our file</td><td>' + fmt(s.our_total_debit) + '</td><td>' + fmt(s.our_total_credit) + '</td><td>' + fmt(s.our_net) + '</td></tr>' +
-        '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(s.supplier_total_debit) + '</td><td>' + fmt(s.supplier_total_credit) + '</td><td>' + fmt(s.supplier_net) + '</td></tr>' +
-        '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
-        '</table>';
+      renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+        s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, false);
+      requestAiTotals(s, matched, issues);
     } else {
       totalsEl.style.display = 'none';
     }
