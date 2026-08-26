@@ -16,7 +16,7 @@ underlying issue rows, and asks Claude to:
   3. Optionally surface 2-4 short thematic groupings among the issue rows
      if a real pattern exists, rather than restating the category counts.
 
-Requires an "accounting_api" environment variable holding a valid
+Requires an "accounting" environment variable holding a valid
 Anthropic API key. If missing or the call fails, the frontend falls back
 to a plain auto-generated sentence - this endpoint failing never breaks
 the rest of the dashboard.
@@ -29,11 +29,11 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-26-explain-difference-v1"
+BUILD_TAG = "2026-08-26-explain-difference-v2-accounting"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-5"
-API_KEY_ENV_VAR = "accounting_api"
+API_KEY_ENV_VAR = "accounting"
 
 PROMPT = """You're helping someone reconcile two versions of the same supplier account: their own company's ledger ("ours") against the supplier's own statement. Below is the EXACT dollar breakdown of the difference between the two files, already computed deterministically - do not recalculate or alter these numbers, only sanity-check them.
 
