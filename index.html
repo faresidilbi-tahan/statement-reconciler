@@ -106,6 +106,22 @@
   #totals .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
   #totals .diff-ok { color: var(--green); }
   #totals .diff-bad { color: var(--red); }
+  #bridge {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  #bridge .bridge-summary { font-size: 13.5px; margin-bottom: 10px; }
+  #bridge table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  #bridge th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  #bridge td { padding: 5px 10px 5px 0; }
+  #bridge td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #bridge .bridge-total td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  #bridge .bridge-residual.ok td { color: var(--green); }
+  #bridge .bridge-residual.bad td { color: var(--amber); }
   #warnings {
     display: none;
     border: 1px solid var(--line);
@@ -131,7 +147,7 @@
   #tableWrap th { background: #f0f3f7; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
   #tableWrap td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   #tableWrap tr:last-child td { border-bottom: 0; }
-  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 15%; }
+  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 10%; }
   #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
   #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 9%; }
   #tableWrap th:nth-child(4), #tableWrap td:nth-child(4) { width: 30%; }
@@ -160,28 +176,9 @@
 
   .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
 
-  #aiVerify { margin-bottom: 14px; }
-  .ai-actions { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-  #aiVerifyBtn { background: #fff; color: var(--blue); border: 1px solid var(--blue); padding: 9px 18px; font-size: 13px; }
-  #aiVerifyBtn:hover:enabled { background: #eef4fc; }
-  #aiVerifyBtn:disabled { opacity: .5; cursor: not-allowed; }
-  .ai-status { font-size: 13px; color: var(--muted); }
-  .ai-block { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; font-size: 13.5px; }
-  .ai-block.ai-ok { border-left: 4px solid var(--green); }
-  .ai-block.ai-bad { border-left: 4px solid var(--red); }
-  .ai-block.ai-error { border-left: 4px solid var(--amber); color: var(--amber); }
-  .ai-notes { color: var(--muted); font-size: 12.5px; }
-  .ai-subtitle { font-weight: 600; font-size: 12.5px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .03em; }
-  table.ai-table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-bottom: 4px; }
-  table.ai-table th, table.ai-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
-  table.ai-table th { background: #f7f9fb; font-size: 11px; text-transform: uppercase; color: var(--muted); }
-  .ai-apply-btn { background: var(--green); color: #fff; padding: 8px 16px; font-size: 12.5px; margin-top: 10px; }
-  .ai-apply-btn:hover:enabled { opacity: .9; }
-  .ai-apply-btn:disabled { opacity: .5; cursor: not-allowed; }
-
   @page { size: landscape; margin: 10mm; }
   @media print {
-    .uploads, .filter-row, .actions, .downloads, #warnings, #aiVerify, #filterBar, #filteredHiddenNote { display: none !important; }
+    .uploads, .filter-row, .actions, .downloads, #warnings, #filterBar, #filteredHiddenNote { display: none !important; }
     body { background: #fff; }
     main { max-width: none; margin: 0; padding: 0; }
     .table-wrap { border: none; box-shadow: none; overflow: visible; }
@@ -189,7 +186,7 @@
     #totals { border: none; padding: 0 0 10px; }
     #tableWrap table { font-size: 9px; width: 100%; table-layout: fixed; }
     #tableWrap th, #tableWrap td { padding: 4px 5px; word-break: break-word; white-space: normal !important; }
-    #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 15%; }
+    #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 10%; }
     #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
     #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 9%; }
     #tableWrap th:nth-child(4), #tableWrap td:nth-child(4) { width: 34%; }
@@ -233,21 +230,15 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-issue-type-filter -->
-    <button id="compareBtn" disabled data-build="2026-08-26-issue-type-filter">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-reconciliation-bridge -->
+    <button id="compareBtn" disabled data-build="2026-08-26-reconciliation-bridge">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
 
   <div id="summary"></div>
   <div id="totals" style="display:none;"></div>
-  <div id="aiVerify" style="display:none;">
-    <div style="display: none;" class="ai-actions">
-      <button id="aiVerifyBtn" type="button">AI Verify totals</button>
-      <span class="ai-status" id="aiVerifyStatus"></span>
-    </div>
-    <div id="aiVerifyResults"></div>
-  </div>
+  <div id="bridge" style="display:none;"></div>
   <div class="downloads" id="downloads" style="display:none;">
     <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
     <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
@@ -441,95 +432,6 @@
   var lastMissingOurs = [];      // missing_in_tahan: rows only on supplier side
   var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
   var lastDiffs = [];
-  var verifyState = null;        // AI Verify: per-file base64 + rows kept from the last successful Compare
-  var lastOursWarnings = [];     // reused when re-rendering after an "Apply AI corrections" pass
-
-  function isPdfBase64(b64) {
-    // "%PDF" (0x25 0x50 0x44 0x46) as base64 starts with "JVBER" - cheap
-    // client-side sniff, mirrors the magic-byte check the server does.
-    return !!b64 && b64.indexOf('JVBER') === 0;
-  }
-
-  // Mirrors compare.py's clean(): only real transaction rows with a
-  // non-zero debit or credit count toward the total AI Verify checks.
-  function cleanForTotals(rows) {
-    var debit = 0, credit = 0;
-    (rows || []).forEach(function (r) {
-      if (r.row_type === 'transaction' && ((r.debit || 0) > 0.01 || (r.credit || 0) > 0.01)) {
-        debit += r.debit || 0;
-        credit += r.credit || 0;
-      }
-    });
-    return { debit: Math.round(debit * 100) / 100, credit: Math.round(credit * 100) / 100 };
-  }
-
-  function runCompareAndRender(oursRowsForCompare, supplierRowsForCompare, warnings) {
-    return post('/api/compare', { ours: oursRowsForCompare, supplier: supplierRowsForCompare })
-      .then(function (cmp) { render(cmp, warnings); });
-  }
-
-  function rebuildOursRows() {
-    var all = [];
-    (verifyState.ours || []).forEach(function (f) { all = all.concat(f.rows); });
-    return all;
-  }
-
-  function normId(v) { return (v === undefined || v === null ? '' : String(v)).trim().toLowerCase(); }
-
-  function findRowIndex(rows, date, id) {
-    var nid = normId(id);
-    var idx = rows.findIndex(function (r) { return r.date === date && normId(r.id) === nid; });
-    if (idx !== -1) return idx;
-    if (nid) {
-      idx = rows.findIndex(function (r) { return normId(r.id) === nid; });
-      if (idx !== -1) return idx;
-    }
-    return -1;
-  }
-
-  // Takes the row-level AI Verify result (suspect/missing/spurious rows)
-  // and actually applies it to a row array: overwrite wrong amounts, add
-  // rows the PDF has but extraction missed, drop rows the PDF doesn't
-  // support. This is a session-only correction to the data feeding the
-  // comparison - it does not change the underlying PDF parser. If the
-  // same supplier keeps needing this, that's a sign the extractor itself
-  // has a bug worth fixing properly (same testing methodology as every
-  // other supplier fix: get the real file, find the root cause, fix it
-  // generally, regression test).
-  function applyAiCorrections(rows, rr) {
-    var updated = rows.slice();
-    var applied = { fixed: 0, added: 0, removed: 0 };
-
-    (rr.suspect_rows || []).forEach(function (s) {
-      var idx = findRowIndex(updated, s.date, s.id);
-      if (idx === -1) return;
-      var row = Object.assign({}, updated[idx]);
-      if (s.correct_debit !== undefined && s.correct_debit !== null) row.debit = Number(s.correct_debit) || 0;
-      if (s.correct_credit !== undefined && s.correct_credit !== null) row.credit = Number(s.correct_credit) || 0;
-      updated[idx] = row;
-      applied.fixed++;
-    });
-
-    (rr.spurious_rows || []).forEach(function (s) {
-      var idx = findRowIndex(updated, s.date, s.id);
-      if (idx !== -1) { updated.splice(idx, 1); applied.removed++; }
-    });
-
-    (rr.missing_rows || []).forEach(function (m) {
-      updated.push({
-        date: m.date || '',
-        id: m.id || '',
-        description: m.description || '(added by AI Verify)',
-        debit: Number(m.debit) || 0,
-        credit: Number(m.credit) || 0,
-        balance: 0,
-        row_type: 'transaction'
-      });
-      applied.added++;
-    });
-
-    return { rows: updated, applied: applied };
-  }
 
   function render(result, warnings) {
     var s = result.summary;
@@ -575,11 +477,7 @@
       totalsEl.style.display = 'none';
     }
 
-    var aiVerifyEl = document.getElementById('aiVerify');
-    aiVerifyEl.style.display = (s.our_net !== undefined) ? 'block' : 'none';
-    document.getElementById('aiVerifyResults').innerHTML = '';
-    document.getElementById('aiVerifyStatus').textContent = '';
-    document.getElementById('aiVerifyBtn').disabled = false;
+    renderBridge(s, issues);
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -599,6 +497,82 @@
     document.getElementById('diffCsvBtn').disabled = lastDiffs.length === 0;
 
     renderIssuesTable();
+  }
+
+  // "Why the difference?" - itemizes exactly what accounts for the gap
+  // between Our net and Supplier net, in plain language, so whoever is
+  // looking at this doesn't have to reverse-engineer it themselves.
+  // Every issue row already carries both sides' debit/credit (0 on
+  // whichever side it's missing from), so one formula covers every issue
+  // type: a row's pull on the difference is (our_credit - our_debit) -
+  // (supplier_debit - supplier_credit) - matching the same credit-minus-
+  // debit / debit-minus-credit sign convention compare.py uses for
+  // our_net/supplier_net. date_mismatch and id_mismatch rows have equal
+  // amounts on both sides by definition, so they net to ~0 here, which is
+  // correct - they don't move the dollar total, only value_mismatch and
+  // the two "missing" categories do. Whatever's left after summing every
+  // issue is the "residual" - almost always the opening-balance gap
+  // (each side's own starting balance has no counterpart on the other
+  // side, so it never shows up as an issue row, but it's real).
+  function issueContribution(row) {
+    return (row.our_credit - row.our_debit) - (row.supplier_debit - row.supplier_credit);
+  }
+
+  function renderBridge(s, issues) {
+    var bridgeEl = document.getElementById('bridge');
+    if (s.our_net === undefined || !issues.length) {
+      bridgeEl.style.display = 'none';
+      return;
+    }
+
+    var groups = {};
+    DIFF_KINDS.concat(['missing_in_supplier', 'missing_in_tahan']).forEach(function (k) {
+      groups[k] = { count: 0, amount: 0 };
+    });
+    issues.forEach(function (row) {
+      if (!groups[row.issue]) groups[row.issue] = { count: 0, amount: 0 };
+      groups[row.issue].count++;
+      groups[row.issue].amount += issueContribution(row);
+    });
+
+    var explained = 0;
+    Object.keys(groups).forEach(function (k) { explained += groups[k].amount; });
+    var residual = Math.round((s.net_difference - explained) * 100) / 100;
+
+    var order = ['missing_in_supplier', 'missing_in_tahan', 'value_mismatch', 'date_mismatch', 'id_mismatch'];
+    var rowsHtml = '';
+    order.forEach(function (k) {
+      var g = groups[k];
+      if (!g || g.count === 0) return;
+      var amt = Math.round(g.amount * 100) / 100;
+      var sign = amt > 0 ? '+' : (amt < 0 ? '−' : '');
+      rowsHtml += '<tr><td>' + (LABELS[k] || k) + ' <span style="color:#999;font-weight:400;">(' + g.count + ')</span></td>' +
+        '<td class="num">' + sign + fmt(Math.abs(amt)) + '</td></tr>';
+    });
+
+    var residualClass = Math.abs(residual) <= 1 ? 'ok' : 'bad';
+    var residualSign = residual > 0 ? '+' : (residual < 0 ? '−' : '');
+    var residualNote = Math.abs(residual) <= 1
+      ? ''
+      : ' <span style="font-weight:400;color:#999;">— usually small per-row rounding differences within the matching tolerance (each matched pair is close enough to count as a match without being identical to the cent), sometimes a difference in how each side struck its opening balance</span>';
+    rowsHtml += '<tr class="bridge-residual ' + residualClass + '"><td>Unexplained residual' + residualNote + '</td>' +
+      '<td class="num">' + residualSign + fmt(Math.abs(residual)) + '</td></tr>';
+
+    var diffAbs = Math.abs(s.net_difference);
+    var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
+    rowsHtml += '<tr class="bridge-total"><td>Total difference</td><td class="num">' + diffSign + fmt(diffAbs) + '</td></tr>';
+
+    var topKey = order.filter(function (k) { return groups[k] && groups[k].count > 0; })
+      .sort(function (a, b) { return Math.abs(groups[b].amount) - Math.abs(groups[a].amount); })[0];
+    var summarySentence = topKey
+      ? 'Most of the ' + fmt(diffAbs) + ' difference comes from ' + groups[topKey].count + ' row' + (groups[topKey].count === 1 ? '' : 's') +
+        ' ' + (LABELS[topKey] || topKey).toLowerCase() + ' (' + fmt(Math.abs(groups[topKey].amount)) + ').'
+      : '';
+
+    bridgeEl.style.display = 'block';
+    bridgeEl.innerHTML =
+      '<div class="bridge-summary"><strong>Why the difference?</strong> ' + summarySentence + '</div>' +
+      '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' + rowsHtml + '</table>';
   }
 
   // Reads the "Show:" checkboxes and re-renders the issues table from
@@ -695,180 +669,6 @@
     document.getElementById('dateTo').value = '';
   });
 
-  // AI Verify: manual, opt-in double-check. Never runs on its own, never
-  // touches extraction/matching. Step 1 (always): ask Claude to read each
-  // eligible PDF directly and independently total debit/credit, compared
-  // against what the deterministic extractor already computed for that
-  // same file. Step 2 (only for files whose totals disagree): ask Claude
-  // to point at the specific rows that look wrong, using the extracted
-  // table as a reference rather than re-parsing blind - this is the
-  // "just whichever file the mismatch points to" behavior: a file whose
-  // AI-read total already matches the extractor is left alone.
-  document.getElementById('aiVerifyBtn').addEventListener('click', function () {
-    if (!verifyState) return;
-    var btn = this;
-    btn.disabled = true;
-    var statusEl = document.getElementById('aiVerifyStatus');
-    var resultsEl = document.getElementById('aiVerifyResults');
-    resultsEl.innerHTML = '';
-    statusEl.textContent = 'Reading PDF(s) with AI…';
-
-    var checks = [];
-    verifyState.ours.forEach(function (f, idx) {
-      checks.push({
-        label: 'Our file' + (verifyState.ours.length > 1 ? ' (' + f.name + ')' : ''),
-        base64: f.base64,
-        rows: f.rows,
-        expected: cleanForTotals(f.rows),
-        target: { kind: 'ours', idx: idx }
-      });
-    });
-    if (verifyState.supplier.isPdf) {
-      checks.push({
-        label: 'Supplier file',
-        base64: verifyState.supplier.base64,
-        rows: verifyState.supplier.rows,
-        expected: cleanForTotals(verifyState.supplier.rows),
-        target: { kind: 'supplier' }
-      });
-    } else {
-      resultsEl.innerHTML += '<div class="ai-block ai-error">Supplier file isn\'t a PDF, so AI Verify skipped it (only PDFs are supported right now).</div>';
-    }
-
-    if (!checks.length) {
-      statusEl.textContent = '';
-      btn.disabled = false;
-      return;
-    }
-
-    function rowsTable(title, rows, cols) {
-      if (!rows || !rows.length) return '';
-      var head = cols.map(function (c) { return '<th>' + esc(c.label) + '</th>'; }).join('');
-      var body = rows.map(function (row) {
-        return '<tr>' + cols.map(function (c) {
-          var v = row[c.key];
-          return '<td>' + (v === undefined || v === null ? '' : esc(v)) + '</td>';
-        }).join('') + '</tr>';
-      }).join('');
-      return '<div class="ai-subtitle">' + esc(title) + '</div><table class="ai-table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>';
-    }
-
-    Promise.all(checks.map(function (c) {
-      return post('/api/ai-verify', {
-        pdf_base64: c.base64,
-        mode: 'totals',
-        expected_total_debit: c.expected.debit,
-        expected_total_credit: c.expected.credit
-      }).then(function (r) { c.totalsResult = r; return c; })
-        .catch(function (err) { c.error = err.message; return c; });
-    })).then(function (checked) {
-      statusEl.textContent = '';
-      checked.forEach(function (c) {
-        if (c.error) {
-          resultsEl.innerHTML += '<div class="ai-block ai-error"><strong>' + esc(c.label) + '</strong>: ' + esc(c.error) + '</div>';
-          return;
-        }
-        var r = c.totalsResult;
-        resultsEl.innerHTML +=
-          '<div class="ai-block ' + (r.matches_extractor ? 'ai-ok' : 'ai-bad') + '">' +
-          '<strong>' + esc(c.label) + '</strong> — AI read: ' + fmt(r.ai_total_debit) + ' debit / ' + fmt(r.ai_total_credit) + ' credit' +
-          ' vs. extractor: ' + fmt(r.expected_total_debit) + ' debit / ' + fmt(r.expected_total_credit) + ' credit — ' +
-          (r.matches_extractor ? 'matches.' : '<strong>mismatch.</strong>') +
-          (r.notes ? ' <span class="ai-notes">' + esc(r.notes) + '</span>' : '') +
-          '</div>';
-      });
-
-      var mismatched = checked.filter(function (c) { return c.totalsResult && !c.totalsResult.matches_extractor; });
-      if (!mismatched.length) {
-        btn.disabled = false;
-        return null;
-      }
-
-      statusEl.textContent = 'Totals disagree — asking AI to point at specific rows…';
-      return Promise.all(mismatched.map(function (c) {
-        return post('/api/ai-verify', { pdf_base64: c.base64, mode: 'rows', rows: c.rows })
-          .then(function (r) { c.rowsResult = r; return c; })
-          .catch(function (err) { c.rowsError = err.message; return c; });
-      })).then(function () {
-        statusEl.textContent = '';
-        mismatched.forEach(function (c) {
-          var container = document.createElement('div');
-          container.className = 'ai-block ai-rows';
-          var header = '<strong>' + esc(c.label) + ' — row-level detail</strong>';
-
-          if (c.rowsError) {
-            container.innerHTML = header + '<div class="ai-notes">' + esc(c.rowsError) + '</div>';
-            resultsEl.appendChild(container);
-            return;
-          }
-
-          var rr = c.rowsResult || {};
-          var tables =
-            rowsTable('Amounts that look wrong', rr.suspect_rows, [
-              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' },
-              { key: 'extracted_debit', label: 'Extracted debit' }, { key: 'extracted_credit', label: 'Extracted credit' },
-              { key: 'correct_debit', label: 'AI says debit' }, { key: 'correct_credit', label: 'AI says credit' },
-              { key: 'note', label: 'Note' }
-            ]) +
-            rowsTable('In the PDF but missing from extraction', rr.missing_rows, [
-              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'description', label: 'Description' },
-              { key: 'debit', label: 'Debit' }, { key: 'credit', label: 'Credit' }
-            ]) +
-            rowsTable('Extracted but not found in the PDF', rr.spurious_rows, [
-              { key: 'date', label: 'Date' }, { key: 'id', label: 'ID' }, { key: 'note', label: 'Note' }
-            ]);
-
-          var hasAny = (rr.suspect_rows && rr.suspect_rows.length) ||
-                       (rr.missing_rows && rr.missing_rows.length) ||
-                       (rr.spurious_rows && rr.spurious_rows.length);
-
-          container.innerHTML = header + (tables ||
-            '<div class="ai-notes">AI confirmed the totals mismatch but couldn\'t pin it to specific rows — worth a manual look.</div>');
-
-          if (hasAny) {
-            var applyBtn = document.createElement('button');
-            applyBtn.type = 'button';
-            applyBtn.className = 'ai-apply-btn';
-            applyBtn.textContent = 'Apply AI corrections & re-compare';
-            var applyStatus = document.createElement('span');
-            applyStatus.className = 'ai-notes';
-            applyStatus.style.marginLeft = '10px';
-            container.appendChild(applyBtn);
-            container.appendChild(applyStatus);
-
-            applyBtn.addEventListener('click', function () {
-              applyBtn.disabled = true;
-              applyStatus.textContent = 'Applying and re-comparing…';
-              var result = applyAiCorrections(c.rows, rr);
-              if (c.target.kind === 'ours') {
-                verifyState.ours[c.target.idx].rows = result.rows;
-              } else {
-                verifyState.supplier.rows = result.rows;
-              }
-              runCompareAndRender(rebuildOursRows(), verifyState.supplier.rows, lastOursWarnings)
-                .then(function () {
-                  setStatus('Done. Applied ' + result.applied.fixed + ' fix' + (result.applied.fixed === 1 ? '' : 'es') +
-                    (result.applied.added ? ', added ' + result.applied.added + ' row' + (result.applied.added === 1 ? '' : 's') : '') +
-                    (result.applied.removed ? ', removed ' + result.applied.removed + ' row' + (result.applied.removed === 1 ? '' : 's') : '') +
-                    ' from ' + c.label.toLowerCase() + '. Re-run AI Verify to confirm the totals now agree.');
-                })
-                .catch(function (err) {
-                  applyStatus.textContent = 'Re-compare failed: ' + err.message;
-                  applyBtn.disabled = false;
-                });
-            });
-          }
-
-          resultsEl.appendChild(container);
-        });
-      });
-    }).catch(function (err) {
-      statusEl.textContent = '';
-      resultsEl.innerHTML += '<div class="ai-block ai-error">' + esc(err.message) + '</div>';
-    }).finally(function () {
-      btn.disabled = false;
-    });
-  });
 
   document.getElementById('compareBtn').addEventListener('click', function () {
     var btn = this;
@@ -880,10 +680,7 @@
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
     document.getElementById('totals').style.display = 'none';
-    document.getElementById('aiVerify').style.display = 'none';
-    document.getElementById('aiVerifyResults').innerHTML = '';
-    document.getElementById('aiVerifyStatus').textContent = '';
-    verifyState = null;
+    document.getElementById('bridge').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
     document.getElementById('filterBar').style.display = 'none';
@@ -894,7 +691,6 @@
 
     var dateFrom = document.getElementById('dateFrom').value;
     var dateTo = document.getElementById('dateTo').value;
-    var oursB64ListCaptured = null, supplierB64Captured = null;
 
     Promise.all([
       Promise.all(files.ours.map(toBase64)),
@@ -905,8 +701,6 @@
         if (oursB64List.some(function (b) { return !b; }) || !supplierB64) {
           throw new Error('One of the files could not be read - please re-select it and try again.');
         }
-        oursB64ListCaptured = oursB64List;
-        supplierB64Captured = supplierB64;
         setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the supplier statement…');
         return Promise.all([
           Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
@@ -936,29 +730,9 @@
           'extractor builds: ours=' + (oursBuildTag || 'unknown') +
           ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
-        lastOursWarnings = oursWarningsAll;
 
-        // Keep what AI Verify needs on hand: each our-file's own base64 +
-        // its own filtered rows (so per-file totals can be checked
-        // individually), and the supplier's base64 + rows + whether it's
-        // even a PDF (AI Verify only supports PDF for now).
-        verifyState = {
-          ours: oursResultsList.map(function (r, idx) {
-            return {
-              name: files.ours[idx].name,
-              base64: oursB64ListCaptured[idx],
-              rows: filterRowsByDate(r.rows, dateFrom, dateTo)
-            };
-          }),
-          supplier: {
-            name: files.supplier.name,
-            base64: supplierB64Captured,
-            rows: supplierRows,
-            isPdf: isPdfBase64(supplierB64Captured)
-          }
-        };
-
-        return runCompareAndRender(oursRows, supplierRows, oursWarningsAll);
+        return post('/api/compare', { ours: oursRows, supplier: supplierRows })
+          .then(function (cmp) { render(cmp, oursWarningsAll); });
       })
       .then(function () { setStatus('Done.'); })
       .catch(function (err) { setStatus(err.message, true); })
@@ -1044,6 +818,8 @@
     document.getElementById('summary').innerHTML = '';
     document.getElementById('totals').style.display = 'none';
     document.getElementById('totals').innerHTML = '';
+    document.getElementById('bridge').style.display = 'none';
+    document.getElementById('bridge').innerHTML = '';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('tbody').innerHTML = '';
     document.getElementById('allclear').style.display = 'none';
