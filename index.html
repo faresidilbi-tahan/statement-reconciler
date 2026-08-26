@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-ai-totals -->
-    <button id="compareBtn" disabled data-build="2026-08-26-ai-totals">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-surface-totals-error -->
+    <button id="compareBtn" disabled data-build="2026-08-26-surface-totals-error">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -441,7 +441,7 @@
   // if AI's sum drifted too far - in that case we show the exact numbers
   // regardless of what AI said, with a visible note, rather than ever
   // presenting an unverified AI sum as fact on a financial tool.
-  function renderTotalsTable(s, ourDebit, ourCredit, ourNet, supDebit, supCredit, supNet, aiState) {
+  function renderTotalsTable(s, ourDebit, ourCredit, ourNet, supDebit, supCredit, supNet, aiState, errMsg) {
     var diffAbs = Math.abs(s.net_difference);
     var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
     var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
@@ -449,7 +449,7 @@
       aiState === 'ok' ? ' <span style="color:var(--green);font-weight:400;font-size:11px;">✓ AI-computed</span>' :
       aiState === 'fallback' ? ' <span style="color:var(--amber);font-weight:400;font-size:11px;" title="AI\'s own total didn\'t match the source data closely enough, showing exact numbers instead">⚠ AI total differed, showing exact</span>' :
       aiState === 'pending' ? ' <span style="color:#999;font-weight:400;font-size:11px;">computing with AI…</span>' :
-      aiState === 'error' ? ' <span style="color:#999;font-weight:400;font-size:11px;">(AI unavailable, showing exact)</span>' : '';
+      aiState === 'error' ? ' <span style="color:#b26a00;font-weight:400;font-size:11px;">(AI unavailable: ' + esc(errMsg || 'unknown error') + ')</span>' : '';
     document.getElementById('totals').innerHTML =
       '<table>' +
       '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
@@ -493,9 +493,9 @@
             s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'fallback');
         }
       })
-      .catch(function () {
+      .catch(function (err) {
         renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
-          s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'error');
+          s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'error', err.message);
       });
   }
 
