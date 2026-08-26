@@ -122,6 +122,8 @@
   #bridge .bridge-total td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
   #bridge .bridge-residual.ok td { color: var(--green); }
   #bridge .bridge-residual.bad td { color: var(--amber); }
+  #bridge .bridge-themes { margin: 6px 0 12px; padding-left: 18px; font-size: 13px; color: var(--muted); }
+  #bridge .bridge-themes li { margin-bottom: 4px; }
   #warnings {
     display: none;
     border: 1px solid var(--line);
@@ -230,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-reconciliation-bridge -->
-    <button id="compareBtn" disabled data-build="2026-08-26-reconciliation-bridge">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-ai-explain-difference -->
+    <button id="compareBtn" disabled data-build="2026-08-26-ai-explain-difference">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -518,13 +520,9 @@
     return (row.our_credit - row.our_debit) - (row.supplier_debit - row.supplier_credit);
   }
 
-  function renderBridge(s, issues) {
-    var bridgeEl = document.getElementById('bridge');
-    if (s.our_net === undefined || !issues.length) {
-      bridgeEl.style.display = 'none';
-      return;
-    }
+  var BRIDGE_ORDER = ['missing_in_supplier', 'missing_in_tahan', 'value_mismatch', 'date_mismatch', 'id_mismatch'];
 
+  function computeBridge(s, issues) {
     var groups = {};
     DIFF_KINDS.concat(['missing_in_supplier', 'missing_in_tahan']).forEach(function (k) {
       groups[k] = { count: 0, amount: 0 };
@@ -534,46 +532,122 @@
       groups[row.issue].count++;
       groups[row.issue].amount += issueContribution(row);
     });
+    Object.keys(groups).forEach(function (k) { groups[k].amount = Math.round(groups[k].amount * 100) / 100; });
 
     var explained = 0;
     Object.keys(groups).forEach(function (k) { explained += groups[k].amount; });
     var residual = Math.round((s.net_difference - explained) * 100) / 100;
 
-    var order = ['missing_in_supplier', 'missing_in_tahan', 'value_mismatch', 'date_mismatch', 'id_mismatch'];
+    return { groups: groups, residual: residual };
+  }
+
+  function bridgeTableHtml(s, groups, residual) {
     var rowsHtml = '';
-    order.forEach(function (k) {
+    BRIDGE_ORDER.forEach(function (k) {
       var g = groups[k];
       if (!g || g.count === 0) return;
-      var amt = Math.round(g.amount * 100) / 100;
-      var sign = amt > 0 ? '+' : (amt < 0 ? '−' : '');
+      var sign = g.amount > 0 ? '+' : (g.amount < 0 ? '−' : '');
       rowsHtml += '<tr><td>' + (LABELS[k] || k) + ' <span style="color:#999;font-weight:400;">(' + g.count + ')</span></td>' +
-        '<td class="num">' + sign + fmt(Math.abs(amt)) + '</td></tr>';
+        '<td class="num">' + sign + fmt(Math.abs(g.amount)) + '</td></tr>';
     });
 
     var residualClass = Math.abs(residual) <= 1 ? 'ok' : 'bad';
     var residualSign = residual > 0 ? '+' : (residual < 0 ? '−' : '');
     var residualNote = Math.abs(residual) <= 1
       ? ''
-      : ' <span style="font-weight:400;color:#999;">— usually small per-row rounding differences within the matching tolerance (each matched pair is close enough to count as a match without being identical to the cent), sometimes a difference in how each side struck its opening balance</span>';
+      : ' <span style="font-weight:400;color:#999;">— usually small per-row rounding differences within the matching tolerance, sometimes a difference in how each side struck its opening balance</span>';
     rowsHtml += '<tr class="bridge-residual ' + residualClass + '"><td>Unexplained residual' + residualNote + '</td>' +
       '<td class="num">' + residualSign + fmt(Math.abs(residual)) + '</td></tr>';
 
     var diffAbs = Math.abs(s.net_difference);
     var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
     rowsHtml += '<tr class="bridge-total"><td>Total difference</td><td class="num">' + diffSign + fmt(diffAbs) + '</td></tr>';
+    return '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' + rowsHtml + '</table>';
+  }
 
-    var topKey = order.filter(function (k) { return groups[k] && groups[k].count > 0; })
+  function fallbackSentence(s, groups) {
+    var diffAbs = Math.abs(s.net_difference);
+    var topKey = BRIDGE_ORDER.filter(function (k) { return groups[k] && groups[k].count > 0; })
       .sort(function (a, b) { return Math.abs(groups[b].amount) - Math.abs(groups[a].amount); })[0];
-    var summarySentence = topKey
+    return topKey
       ? 'Most of the ' + fmt(diffAbs) + ' difference comes from ' + groups[topKey].count + ' row' + (groups[topKey].count === 1 ? '' : 's') +
         ' ' + (LABELS[topKey] || topKey).toLowerCase() + ' (' + fmt(Math.abs(groups[topKey].amount)) + ').'
       : '';
+  }
 
+  // "Why the difference?" - the dollar breakdown itself is always the
+  // exact deterministic math above (never overridden by AI - a financial
+  // reconciliation tool can't let an LLM's arithmetic silently replace
+  // numbers that have to audit correctly). AI's job, run automatically
+  // after every Compare that has issues, is narrower: independently
+  // re-check that the breakdown actually sums to the real difference, and
+  // write the plain-English explanation using the row descriptions -
+  // something the arithmetic alone can't do (e.g. noticing a batch of
+  // missing rows all cluster around one cash-payment date). If the AI
+  // call fails for any reason (no credits, no key, network), the
+  // dashboard falls back to the plain auto-generated sentence rather than
+  // showing nothing.
+  function renderBridge(s, issues) {
+    var bridgeEl = document.getElementById('bridge');
+    if (s.our_net === undefined || !issues.length) {
+      bridgeEl.style.display = 'none';
+      return;
+    }
+
+    var bridge = computeBridge(s, issues);
     bridgeEl.style.display = 'block';
     bridgeEl.innerHTML =
-      '<div class="bridge-summary"><strong>Why the difference?</strong> ' + summarySentence + '</div>' +
-      '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' + rowsHtml + '</table>';
+      '<div class="bridge-summary"><strong>Why the difference?</strong> ' +
+      '<span id="bridgeNarrative">' + esc(fallbackSentence(s, bridge.groups)) + ' <span style="color:#999;">Asking AI to explain…</span></span></div>' +
+      '<div id="bridgeThemes"></div>' +
+      bridgeTableHtml(s, bridge.groups, bridge.residual);
+
+    requestAiExplanation(s, issues, bridge);
   }
+
+  function requestAiExplanation(s, issues, bridge) {
+    var slimIssues = issues.slice(0, 80).map(function (r) {
+      return {
+        issue: r.issue, date: r.date, id: r.id,
+        description: (r.description || '').slice(0, 140),
+        our_debit: r.our_debit, our_credit: r.our_credit,
+        supplier_debit: r.supplier_debit, supplier_credit: r.supplier_credit
+      };
+    });
+    var breakdown = BRIDGE_ORDER
+      .filter(function (k) { return bridge.groups[k] && bridge.groups[k].count > 0; })
+      .map(function (k) { return { type: k, label: LABELS[k] || k, count: bridge.groups[k].count, amount: bridge.groups[k].amount }; });
+
+    post('/api/explain-difference', {
+      summary: {
+        our_total_debit: s.our_total_debit, our_total_credit: s.our_total_credit, our_net: s.our_net,
+        supplier_total_debit: s.supplier_total_debit, supplier_total_credit: s.supplier_total_credit, supplier_net: s.supplier_net,
+        net_difference: s.net_difference
+      },
+      breakdown: breakdown,
+      residual: bridge.residual,
+      issues: slimIssues
+    }).then(function (r) {
+      var narrEl = document.getElementById('bridgeNarrative');
+      var themesEl = document.getElementById('bridgeThemes');
+      if (!narrEl) return; // a newer Compare already replaced the panel
+      var verifyBadge = r.verified === false
+        ? ' <span style="color:var(--amber);font-weight:600;" title="' + esc(r.verification_note || '') + '">⚠ AI flagged the breakdown as not adding up - see numbers below</span>'
+        : '';
+      narrEl.innerHTML = esc(r.narrative || fallbackSentence(s, bridge.groups)) + verifyBadge;
+      if (r.themes && r.themes.length && themesEl) {
+        themesEl.innerHTML = '<ul class="bridge-themes">' + r.themes.map(function (t) {
+          return '<li><strong>' + esc(t.title) + '</strong> <span style="color:#999;">(' + (t.count || 0) + ')</span> — ' + esc(t.note || '') + '</li>';
+        }).join('') + '</ul>';
+      }
+    }).catch(function (err) {
+      var narrEl = document.getElementById('bridgeNarrative');
+      if (!narrEl) return;
+      narrEl.innerHTML = esc(fallbackSentence(s, bridge.groups)) +
+        ' <span style="color:#999;" title="' + esc(err.message) + '">(AI explanation unavailable)</span>';
+    });
+  }
+
 
   // Reads the "Show:" checkboxes and re-renders the issues table from
   // lastIssues without touching the server - lets the person narrow to
