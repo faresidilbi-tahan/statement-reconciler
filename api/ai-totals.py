@@ -28,12 +28,12 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-26-ai-totals-v3-sonnet"
+BUILD_TAG = "2026-08-26-ai-totals-v4-compact-more-room"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-5"
 API_KEY_ENV_VAR = "accounting"
-MAX_TOKENS = 1200
+MAX_TOKENS = 4000
 
 PROMPT = """Sum two lists of transactions. Each row has a debit and credit amount (numbers, possibly 0).
 
@@ -46,9 +46,9 @@ SUPPLIER_ROWS:
 For OUR_ROWS: add up every "debit" value into our_total_debit, and every "credit" value into our_total_credit.
 For SUPPLIER_ROWS: add up every "debit" value into supplier_total_debit, and every "credit" value into supplier_total_credit.
 
-Work through each sum carefully step by step first - list the running total as you add each value, for all four sums, so you don't lose track partway through a long list. Only after you've worked through all four sums, round each to 2 decimal places and give the final answer.
+Work through each of the four sums using compact running totals only - no commentary, no full sentences. For example: "our_debit: 0+1500+187.5+187.5=1875, +600=2475, ..." one line per sum, updating the running total after each value. Keep this as terse as possible so you have room to finish all four sums before answering.
 
-End your response with ONLY this JSON object on its own line, nothing after it (the step-by-step work above it is fine, just make sure this exact object is the very last thing you output):
+End your response with ONLY this JSON object on its own line, nothing after it (the compact running-total lines above it are fine, just make sure this exact object is the very last thing you output):
 {{"our_total_debit": <number>, "our_total_credit": <number>, "supplier_total_debit": <number>, "supplier_total_credit": <number>}}
 """
 
@@ -94,7 +94,14 @@ def call_claude(prompt_text):
         candidate = raw[last_brace:].strip()
         candidate = re.sub(r"\s*```$", "", candidate)
         return json.loads(candidate)
-    raise ValueError("No JSON object found in Claude's response.")
+
+    stop_reason = data.get("stop_reason", "unknown")
+    hint = " (stop_reason=max_tokens - likely ran out of room mid-reasoning before reaching the final answer)" if stop_reason == "max_tokens" else ""
+    raise ValueError(
+        "No JSON object found in Claude's response (stop_reason={}, {} chars of text received){}.".format(
+            stop_reason, len(raw), hint
+        )
+    )
 
 
 class handler(BaseHTTPRequestHandler):
