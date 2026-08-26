@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-cell-amount-collision"
+BUILD_TAG = "2026-08-26-strategy-sanity-check"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -74,6 +74,14 @@ CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand", "movement
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
 SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
               "p.o.box", "www.", "@", "pdc")
+
+# A page-footer print timestamp ("Date 07/08/2026 Time 2:41:43PM") looks
+# just enough like a data row (has a date, "Time" isn't in any keyword
+# list) to slip through as a phantom $0/$0 transaction. Harmless to
+# matching (compare.py already drops all-zero rows on both sides) but
+# pure noise - skip it generally by its distinctive clock-time shape
+# rather than any one supplier's exact footer wording.
+PRINT_TIMESTAMP_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\s*[AaPp][Mm]\b")
 
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
 NUM_DATE_RE = re.compile(r"(\d{1,4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,4})")
@@ -424,7 +432,7 @@ def parse_words_strategy(pdf):
             if header_hits >= 3:
                 prev_was_data = False
                 continue
-            if any(s in raw_low for s in SKIP_WORDS):
+            if any(s in raw_low for s in SKIP_WORDS) or PRINT_TIMESTAMP_RE.search(raw):
                 prev_was_data = False
                 continue
 
@@ -570,7 +578,8 @@ def parse_tables_strategy(pdf):
                         celld["id"] = cells[idx]
                         break
                 raw_low = " ".join(cells).lower()
-                if any(s in raw_low for s in SKIP_WORDS):
+                raw_joined = " ".join(cells)
+                if any(s in raw_low for s in SKIP_WORDS) or PRINT_TIMESTAMP_RE.search(raw_joined):
                     prev_was_data = False
                     continue
                 row = build_row(celld, raw_low)
@@ -629,12 +638,24 @@ def parse_pdf(file_bytes):
     # Ruled-table extraction reads each printed cell directly and is immune
     # to the column-bleed that can happen with the word-position strategy
     # (e.g. an address like "CHTAURA-" running into the next column with no
-    # gap). Prefer it whenever the PDF actually draws table lines; only fall
-    # back to word-position matching when no ruled table is found.
-    if t_found and t_rows:
+    # gap). Prefer it whenever the PDF actually draws table lines - but
+    # "t_found" only means pdfplumber's detector matched SOMETHING; its
+    # whitespace/alignment heuristics can false-positive on a PDF with no
+    # real ruled grid at all, swallowing every row into one giant merged
+    # cell (seen for real: 22 transactions collapsed into a single
+    # "opening_balance" row because a genuine ruled table doesn't exist on
+    # that PDF). A real ruled-table extraction should never produce fewer
+    # actual transaction rows than the word-position fallback finds on the
+    # same page, so use that as the sanity check rather than trusting
+    # "t_found" alone.
+    t_txn_count = sum(1 for r in t_rows if r.get("row_type") == "transaction")
+    w_txn_count = sum(1 for r in w_rows if r.get("row_type") == "transaction")
+    if t_found and t_rows and t_txn_count >= w_txn_count:
         strategy, rows, warnings = "table", t_rows, t_warn
     elif w_found:
         strategy, rows, warnings = "words", w_rows, w_warn
+    elif t_found and t_rows:
+        strategy, rows, warnings = "table", t_rows, t_warn
     else:
         raise ValueError(
             "Could not find a recognizable column header (Date/Debit/Credit/"
