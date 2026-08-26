@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-positional-header-check"
+BUILD_TAG = "2026-08-26-cell-amount-collision"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -165,6 +165,27 @@ def parse_amount(token):
         return None
 
 
+def parse_amount_cell(raw_cell):
+    """A debit/credit/balance cell can end up with more than one amount-
+    like token in it - e.g. a description that restates an amount inline
+    ("...4619/102/02- 24.40 $") can sit right at a column boundary, so
+    both that memo number and the real column value land in the same
+    cell ("24.40 $ 24.40"), which fails to parse as a single amount and
+    silently becomes 0. assign_columns joins a cell's words in
+    left-to-right x-order, so when the whole cell doesn't parse cleanly,
+    the LAST token is the one physically closest to the real column
+    position and by far the more likely genuine value."""
+    if raw_cell == "":
+        return None
+    val = parse_amount(raw_cell)
+    if val is not None:
+        return val
+    parts = raw_cell.split()
+    if len(parts) > 1:
+        return parse_amount(parts[-1])
+    return None
+
+
 # Per-document date convention ('DMY' or 'MDY'), detected once per parsed
 # file from unambiguous dates it contains (see detect_date_convention).
 # Only used for the numeric-slash date form when both parts could be either
@@ -262,9 +283,9 @@ def build_row(cells, raw_low):
             date = found_date
             cells = dict(cells)
             cells["id"] = remainder
-    debit = parse_amount(cells.get("debit", "")) if cells.get("debit", "") != "" else None
-    credit = parse_amount(cells.get("credit", "")) if cells.get("credit", "") != "" else None
-    balance = parse_amount(cells.get("balance", "")) if cells.get("balance", "") != "" else None
+    debit = parse_amount_cell(cells.get("debit", ""))
+    credit = parse_amount_cell(cells.get("credit", ""))
+    balance = parse_amount_cell(cells.get("balance", ""))
 
     if any(k in raw_low for k in OPENING_WORDS):
         row_type = "opening_balance"
