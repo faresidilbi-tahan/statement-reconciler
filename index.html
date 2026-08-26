@@ -118,6 +118,13 @@
   }
 
   .table-wrap { overflow-x: hidden; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: none; }
+  .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; font-size: 13px; }
+  .filter-bar .filter-label { font-weight: 600; color: var(--muted); }
+  .filter-bar label { display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  .filter-bar input[type="checkbox"] { cursor: pointer; }
+  .filter-bar button { background: #fff; border: 1px solid var(--line); color: var(--blue); padding: 4px 10px; font-size: 12px; }
+  .filter-bar .filter-actions { margin-left: auto; display: flex; gap: 8px; }
+  .filtered-hidden-note { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
   #tableWrap table { border-collapse: collapse; width: 100%; font-size: 11.5px; table-layout: fixed; }
   #tableWrap th, #tableWrap td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: normal; word-break: break-word; overflow-wrap: break-word; vertical-align: top; }
   #tableWrap td.desc { white-space: normal; }
@@ -174,7 +181,7 @@
 
   @page { size: landscape; margin: 10mm; }
   @media print {
-    .uploads, .filter-row, .actions, .downloads, #warnings, #aiVerify { display: none !important; }
+    .uploads, .filter-row, .actions, .downloads, #warnings, #aiVerify, #filterBar, #filteredHiddenNote { display: none !important; }
     body { background: #fff; }
     main { max-width: none; margin: 0; padding: 0; }
     .table-wrap { border: none; box-shadow: none; overflow: visible; }
@@ -226,8 +233,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-table-fit-no-scroll -->
-    <button id="compareBtn" disabled data-build="2026-08-26-table-fit-no-scroll">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-issue-type-filter -->
+    <button id="compareBtn" disabled data-build="2026-08-26-issue-type-filter">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -250,6 +257,19 @@
   </div>
   <div id="warnings"></div>
   <div class="allclear" id="allclear">No discrepancies — every transaction matched.</div>
+  <div class="filter-bar" id="filterBar" style="display:none;">
+    <span class="filter-label">Show:</span>
+    <label><input type="checkbox" class="issueFilter" value="value_mismatch" checked> Value mismatch</label>
+    <label><input type="checkbox" class="issueFilter" value="date_mismatch" checked> Date mismatch</label>
+    <label><input type="checkbox" class="issueFilter" value="id_mismatch" checked> ID mismatch</label>
+    <label><input type="checkbox" class="issueFilter" value="missing_in_tahan" checked> Missing in our file</label>
+    <label><input type="checkbox" class="issueFilter" value="missing_in_supplier" checked> Missing in supplier</label>
+    <div class="filter-actions">
+      <button type="button" id="filterAllBtn">All</button>
+      <button type="button" id="filterNoneBtn">None</button>
+    </div>
+  </div>
+  <div class="filtered-hidden-note" id="filteredHiddenNote" style="display:none;"></div>
 
   <div class="table-wrap" id="tableWrap">
     <table>
@@ -569,11 +589,8 @@
       warnEl.style.display = 'none';
     }
 
-    var tbody = document.getElementById('tbody');
-    tbody.innerHTML = '';
     var hasIssues = issues.length > 0;
-    document.getElementById('tableWrap').style.display = hasIssues ? 'block' : 'none';
-    document.getElementById('allclear').style.display = hasIssues ? 'none' : 'block';
+    document.getElementById('filterBar').style.display = hasIssues ? 'flex' : 'none';
     var dl = document.getElementById('downloads');
     dl.style.display = 'flex';
     document.getElementById('commonCsvBtn').disabled = matched.length === 0;
@@ -581,7 +598,30 @@
     document.getElementById('missingSupplierCsvBtn').disabled = lastMissingSupplier.length === 0;
     document.getElementById('diffCsvBtn').disabled = lastDiffs.length === 0;
 
-    issues.forEach(function (row) {
+    renderIssuesTable();
+  }
+
+  // Reads the "Show:" checkboxes and re-renders the issues table from
+  // lastIssues without touching the server - lets the person narrow to
+  // just the issue types they care about (e.g. only date+id mismatches,
+  // ignoring value mismatches) without re-running Compare.
+  function activeIssueFilters() {
+    var active = {};
+    document.querySelectorAll('.issueFilter').forEach(function (cb) {
+      if (cb.checked) active[cb.value] = true;
+    });
+    return active;
+  }
+
+  function renderIssuesTable() {
+    var issues = lastIssues || [];
+    var hasIssues = issues.length > 0;
+    var active = activeIssueFilters();
+    var filtered = issues.filter(function (row) { return active[row.issue]; });
+
+    var tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    filtered.forEach(function (row) {
       var tr = document.createElement('tr');
       var outOfRange = row.out_of_our_range ?
         ' <span title="Dated outside our statement\'s own date range" style="color:#b26a00;font-weight:600;">(other period)</span>' : '';
@@ -596,7 +636,43 @@
         '<td class="num">' + fmt(row.supplier_credit) + '</td>';
       tbody.appendChild(tr);
     });
+
+    var noteEl = document.getElementById('filteredHiddenNote');
+    var hiddenCount = issues.length - filtered.length;
+    if (hasIssues && hiddenCount > 0) {
+      noteEl.style.display = 'block';
+      noteEl.textContent = hiddenCount + ' row' + (hiddenCount === 1 ? '' : 's') + ' hidden by the filter above (' + filtered.length + ' of ' + issues.length + ' shown).';
+    } else {
+      noteEl.style.display = 'none';
+    }
+
+    document.getElementById('tableWrap').style.display = (hasIssues && filtered.length > 0) ? 'block' : 'none';
+    // "All clear" only when there truly are no differences at all - if
+    // issues exist but the filter hid all of them, say so instead, since
+    // that's a very different situation from a clean reconciliation.
+    var allclearEl = document.getElementById('allclear');
+    if (!hasIssues) {
+      allclearEl.style.display = 'block';
+      allclearEl.textContent = 'No discrepancies — every transaction matched.';
+    } else if (filtered.length === 0) {
+      allclearEl.style.display = 'block';
+      allclearEl.textContent = 'Nothing to show — every difference is hidden by the current filter (' + issues.length + ' total, filtered out above).';
+    } else {
+      allclearEl.style.display = 'none';
+    }
   }
+
+  document.querySelectorAll('.issueFilter').forEach(function (cb) {
+    cb.addEventListener('change', renderIssuesTable);
+  });
+  document.getElementById('filterAllBtn').addEventListener('click', function () {
+    document.querySelectorAll('.issueFilter').forEach(function (cb) { cb.checked = true; });
+    renderIssuesTable();
+  });
+  document.getElementById('filterNoneBtn').addEventListener('click', function () {
+    document.querySelectorAll('.issueFilter').forEach(function (cb) { cb.checked = false; });
+    renderIssuesTable();
+  });
 
   function inRange(dateStr, from, to) {
     if (!dateStr) return true; // keep rows with no date (e.g. malformed) rather than silently drop them
@@ -810,6 +886,8 @@
     verifyState = null;
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
+    document.getElementById('filterBar').style.display = 'none';
+    document.getElementById('filteredHiddenNote').style.display = 'none';
     document.getElementById('downloads').style.display = 'none';
     document.getElementById('warnings').style.display = 'none';
     setStatus('Reading files…');
