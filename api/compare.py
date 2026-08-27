@@ -39,7 +39,7 @@ def _parse_iso_date(s):
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-21-totals"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-26-matched-rows-always-in-totals"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -366,11 +366,27 @@ def compare(ours_raw, supplier_raw):
     # show a large "difference" that's really just missing prior-period
     # data on our side, not a real discrepancy (see id_disregarded above
     # for the same kind of period-mismatch problem in matching).
+    #
+    # EXCEPTION: a supplier row that was actually matched to one of our
+    # transactions is always counted, regardless of its date. Matching
+    # already proves it's genuinely relevant to this reconciliation - a
+    # real-world example that surfaced this: a lump cheque payment posted
+    # by us on the last day of our statement, with the supplier recording
+    # the matching credit a day or two later (past our file's own date
+    # range). Excluding a verified match purely because of a one-day
+    # boundary created a phantom "unexplained" gap equal to the entire
+    # payment, even though the transaction was correctly reconciled.
     our_total_debit = round(sum(r["debit"] for r in ours), 2)
     our_total_credit = round(sum(r["credit"] for r in ours), 2)
     our_net = round(our_total_credit - our_total_debit, 2)
 
-    supplier_in_range = [supplier[j] for j in range(len(supplier)) if not out_of_our_range(supplier[j])]
+    matched_supplier_indices = (
+        set(j for _, j in exact) | set(j for _, j in exact_via_step3) | set(j for _, j in amt_only_pairs)
+    )
+    supplier_in_range = [
+        supplier[j] for j in range(len(supplier))
+        if j in matched_supplier_indices or not out_of_our_range(supplier[j])
+    ]
     supplier_total_debit = round(sum(r["debit"] for r in supplier_in_range), 2)
     supplier_total_credit = round(sum(r["credit"] for r in supplier_in_range), 2)
     supplier_net = round(supplier_total_debit - supplier_total_credit, 2)
