@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-ai-totals-size-limit -->
-    <button id="compareBtn" disabled data-build="2026-08-26-ai-totals-size-limit">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-balance-column-net -->
+    <button id="compareBtn" disabled data-build="2026-08-26-balance-column-net">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -441,6 +441,24 @@
   // if AI's sum drifted too far - in that case we show the exact numbers
   // regardless of what AI said, with a visible note, rather than ever
   // presenting an unverified AI sum as fact on a financial tool.
+  //
+  // Net itself (separately from the AI check above) is cross-checked
+  // against each file's own printed Balance column server-side - a small
+  // note next to each row's Net value says whether that number came from
+  // the Balance column (trusted, since it agreed with the debit/credit
+  // total) or is the debit/credit calculation itself (either because
+  // Balance data wasn't available, or because it disagreed enough that
+  // trusting it would have been the riskier choice).
+  function netSourceNote(source) {
+    if (source === 'balance') {
+      return ' <span style="color:var(--green);font-weight:400;font-size:10.5px;" title="Matches the debit/credit total, so this is read from the file\'s own Balance column">✓ from Balance col.</span>';
+    }
+    if (source === 'debit_credit') {
+      return ' <span style="color:#999;font-weight:400;font-size:10.5px;" title="Balance-column data wasn\'t available, or it disagreed with the debit/credit total by more than $1 - showing the debit/credit calculation instead">(calculated)</span>';
+    }
+    return '';
+  }
+
   function renderTotalsTable(s, ourDebit, ourCredit, ourNet, supDebit, supCredit, supNet, aiState, errMsg) {
     var diffAbs = Math.abs(s.net_difference);
     var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
@@ -454,8 +472,8 @@
     document.getElementById('totals').innerHTML =
       '<table>' +
       '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
-      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + '</td></tr>' +
-      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(supDebit) + '</td><td>' + fmt(supCredit) + '</td><td>' + fmt(supNet) + '</td></tr>' +
+      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + netSourceNote(s.our_net_source) + '</td></tr>' +
+      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(supDebit) + '</td><td>' + fmt(supCredit) + '</td><td>' + fmt(supNet) + netSourceNote(s.supplier_net_source) + '</td></tr>' +
       '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
       '</table>';
   }
@@ -495,15 +513,19 @@
       .then(function (r) {
         var aiOurDebit = Number(r.our_total_debit), aiOurCredit = Number(r.our_total_credit);
         var aiSupDebit = Number(r.supplier_total_debit), aiSupCredit = Number(r.supplier_total_credit);
-        var aiOurNet = Math.round((aiOurCredit - aiOurDebit) * 100) / 100;
-        var aiSupNet = Math.round((aiSupDebit - aiSupCredit) * 100) / 100;
 
         var closeEnough =
           Math.abs(aiOurDebit - s.our_total_debit) <= 1 && Math.abs(aiOurCredit - s.our_total_credit) <= 1 &&
           Math.abs(aiSupDebit - s.supplier_total_debit) <= 1 && Math.abs(aiSupCredit - s.supplier_total_credit) <= 1;
 
+        // Net always comes from s.our_net/s.supplier_net (already the
+        // authoritative, Balance-column-cross-checked figures from
+        // compare.py) - AI here only ever re-verifies Debit/Credit, never
+        // recomputes Net itself, so a successful AI check can't
+        // accidentally overwrite a more trustworthy balance-derived Net
+        // with a plain debit-minus-credit recalculation.
         if (closeEnough) {
-          renderTotalsTable(s, aiOurDebit, aiOurCredit, aiOurNet, aiSupDebit, aiSupCredit, aiSupNet, 'ok');
+          renderTotalsTable(s, aiOurDebit, aiOurCredit, s.our_net, aiSupDebit, aiSupCredit, s.supplier_net, 'ok');
         } else {
           renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
             s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'fallback');
@@ -878,7 +900,25 @@
           ', supplier=' + (supplier.build_tag || 'unknown') + ')';
         setStatus('Matching ' + oursRows.length + ' vs ' + supplierRows.length + ' rows…');
 
-        return post('/api/compare', { ours: oursRows, supplier: supplierRows })
+        // For the Net cross-check against the supplier's own Balance
+        // column: find the balance of the last supplier row strictly
+        // before our From date, using the FULL unfiltered supplier data
+        // (only available here, before filterRowsByDate cuts it down) -
+        // that's the starting point compare.py needs to measure "how much
+        // did the balance move during our window" from the supplier's own
+        // numbers. Only meaningful when a From date is actually set.
+        var supplierPreRangeBalance = null;
+        if (dateFrom) {
+          var beforeRange = supplier.rows.filter(function (r) {
+            return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null && r.date < dateFrom;
+          });
+          if (beforeRange.length) {
+            beforeRange.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+            supplierPreRangeBalance = beforeRange[beforeRange.length - 1].balance;
+          }
+        }
+
+        return post('/api/compare', { ours: oursRows, supplier: supplierRows, supplier_pre_range_balance: supplierPreRangeBalance })
           .then(function (cmp) { render(cmp, oursWarningsAll); });
       })
       .then(function () { setStatus('Done.'); })
