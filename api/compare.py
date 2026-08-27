@@ -39,7 +39,7 @@ def _parse_iso_date(s):
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-26-matched-rows-always-in-totals"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-26-balance-column-net-v2"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -114,6 +114,7 @@ def clean(rows):
             "credit": credit,
             "amt": amt,
             "row_type": r.get("row_type", "transaction"),
+            "balance": r.get("balance"),
         })
     # A transaction with $0 on both debit and credit has no monetary
     # substance to reconcile - suppliers and our own ledger both sometimes
@@ -260,7 +261,7 @@ def matched_out(o, s):
     }
 
 
-def compare(ours_raw, supplier_raw):
+def compare(ours_raw, supplier_raw, supplier_pre_range_balance=None):
     ours = clean(ours_raw)
     supplier = clean(supplier_raw)
 
@@ -378,7 +379,7 @@ def compare(ours_raw, supplier_raw):
     # payment, even though the transaction was correctly reconciled.
     our_total_debit = round(sum(r["debit"] for r in ours), 2)
     our_total_credit = round(sum(r["credit"] for r in ours), 2)
-    our_net = round(our_total_credit - our_total_debit, 2)
+    our_net_debit_credit = round(our_total_credit - our_total_debit, 2)
 
     matched_supplier_indices = (
         set(j for _, j in exact) | set(j for _, j in exact_via_step3) | set(j for _, j in amt_only_pairs)
@@ -389,7 +390,57 @@ def compare(ours_raw, supplier_raw):
     ]
     supplier_total_debit = round(sum(r["debit"] for r in supplier_in_range), 2)
     supplier_total_credit = round(sum(r["credit"] for r in supplier_in_range), 2)
-    supplier_net = round(supplier_total_debit - supplier_total_credit, 2)
+    supplier_net_debit_credit = round(supplier_total_debit - supplier_total_credit, 2)
+
+    # Net, cross-checked directly against each file's own printed Balance
+    # column rather than trusting only our own debit/credit summation.
+    # This catches extraction errors that the debit/credit totals alone
+    # wouldn't reveal (e.g. two mistakes that happen to cancel out).
+    #
+    # Sign conventions differ between the two sides and are derived from
+    # real extracted data, not assumed: "ours" (accsta04) writes credit-
+    # side balances as negative (parenthesized), so opening minus closing
+    # gives the same positive-when-credit-heavy convention as our_net.
+    # The supplier's balance column runs the other way - it increases
+    # with debit and decreases with credit - so end minus start already
+    # matches supplier_net's positive-when-debit-heavy convention.
+    #
+    # The balance-derived figure is only trusted (and only replaces the
+    # debit/credit total) when it's available AND agrees with the
+    # debit/credit total within $1 - if a supplier's format encodes
+    # balance differently than assumed here, the two would diverge
+    # sharply, and blindly trusting the balance column then would be
+    # worse than falling back to debit/credit. Either way this is
+    # surfaced to the caller via *_net_source, never silently guessed.
+    NET_CROSSCHECK_TOLERANCE = 1.0
+
+    our_net = our_net_debit_credit
+    our_net_source = "debit_credit"
+    our_opening_rows = [r for r in ours_raw if r.get("row_type") == "opening_balance" and r.get("balance") is not None]
+    our_closing_rows = [r for r in ours_raw if r.get("row_type") == "closing_balance" and r.get("balance") is not None]
+    if len(our_opening_rows) == 1 and len(our_closing_rows) == 1:
+        our_net_balance = round(our_opening_rows[0]["balance"] - our_closing_rows[0]["balance"], 2)
+        if abs(our_net_balance - our_net_debit_credit) <= NET_CROSSCHECK_TOLERANCE:
+            our_net = our_net_balance
+            our_net_source = "balance"
+
+    supplier_net = supplier_net_debit_credit
+    supplier_net_source = "debit_credit"
+    supplier_in_range_dated = [r for r in supplier_in_range if r.get("date") and r.get("balance") is not None]
+    if supplier_pre_range_balance is not None and supplier_in_range_dated:
+        # Multiple transactions can share the same date - the true
+        # end-of-range balance is whichever one was posted LAST that day,
+        # not just "any row with the maximum date". Rows are already in
+        # the source document's own sequential order, so among rows tied
+        # on the max date, the last one in that order is the real
+        # end-of-day balance.
+        max_date = max(r["date"] for r in supplier_in_range_dated)
+        same_day = [r for r in supplier_in_range_dated if r["date"] == max_date]
+        end_row = same_day[-1]
+        supplier_net_balance = round(end_row["balance"] - supplier_pre_range_balance, 2)
+        if abs(supplier_net_balance - supplier_net_debit_credit) <= NET_CROSSCHECK_TOLERANCE:
+            supplier_net = supplier_net_balance
+            supplier_net_source = "balance"
 
     net_difference = round(our_net - supplier_net, 2)
 
@@ -409,9 +460,13 @@ def compare(ours_raw, supplier_raw):
             "our_total_debit": our_total_debit,
             "our_total_credit": our_total_credit,
             "our_net": our_net,
+            "our_net_source": our_net_source,
+            "our_net_debit_credit": our_net_debit_credit,
             "supplier_total_debit": supplier_total_debit,
             "supplier_total_credit": supplier_total_credit,
             "supplier_net": supplier_net,
+            "supplier_net_source": supplier_net_source,
+            "supplier_net_debit_credit": supplier_net_debit_credit,
             "net_difference": net_difference,
         },
         "issues": issues,
@@ -432,7 +487,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length) or b"{}")
-            result = compare(data.get("ours"), data.get("supplier"))
+            result = compare(data.get("ours"), data.get("supplier"), data.get("supplier_pre_range_balance"))
             self._send(200, result)
         except json.JSONDecodeError:
             self._send(400, {"error": "Invalid JSON body."})
