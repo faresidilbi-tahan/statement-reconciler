@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-surface-totals-error -->
-    <button id="compareBtn" disabled data-build="2026-08-26-surface-totals-error">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-ai-totals-size-limit -->
+    <button id="compareBtn" disabled data-build="2026-08-26-ai-totals-size-limit">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -449,7 +449,8 @@
       aiState === 'ok' ? ' <span style="color:var(--green);font-weight:400;font-size:11px;">✓ AI-computed</span>' :
       aiState === 'fallback' ? ' <span style="color:var(--amber);font-weight:400;font-size:11px;" title="AI\'s own total didn\'t match the source data closely enough, showing exact numbers instead">⚠ AI total differed, showing exact</span>' :
       aiState === 'pending' ? ' <span style="color:#999;font-weight:400;font-size:11px;">computing with AI…</span>' :
-      aiState === 'error' ? ' <span style="color:#b26a00;font-weight:400;font-size:11px;">(AI unavailable: ' + esc(errMsg || 'unknown error') + ')</span>' : '';
+      aiState === 'error' ? ' <span style="color:#b26a00;font-weight:400;font-size:11px;">(AI unavailable: ' + esc(errMsg || 'unknown error') + ')</span>' :
+      aiState === 'toolarge' ? ' <span style="color:#999;font-weight:400;font-size:11px;" title="Too many rows to reliably sum in one AI call - showing exact numbers directly">(too many rows for AI, showing exact)</span>' : '';
     document.getElementById('totals').innerHTML =
       '<table>' +
       '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
@@ -465,7 +466,22 @@
   // cent. The exact deterministic totals from compare.py are always kept
   // as the source of truth in the background; AI's totals only replace
   // the display when they land within $1 of that exact figure.
+  //
+  // Above AI_TOTALS_ROW_LIMIT combined rows, skip the AI call entirely
+  // rather than attempt one that's essentially guaranteed to run out of
+  // room mid-sum (seen for real: 726 rows blew through a 4000-token
+  // budget). No point spending tokens on a call whose failure mode is
+  // already known - just show the exact numbers straight away.
+  var AI_TOTALS_ROW_LIMIT = 150;
+
   function requestAiTotals(s, matched, issues) {
+    var combinedCount = matched.length + issues.length;
+    if (combinedCount > AI_TOTALS_ROW_LIMIT) {
+      renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+        s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'toolarge');
+      return;
+    }
+
     renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
       s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, 'pending');
 
