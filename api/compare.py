@@ -39,7 +39,7 @@ def _parse_iso_date(s):
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-26-balance-column-net-v2"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-26-skip-blank-footer-rows"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -122,7 +122,22 @@ def clean(rows):
     # the real amount posted separately, etc.). Drop them entirely rather
     # than let them show up as a phantom "missing" row on whichever side
     # has no matching zero-value counterpart.
-    return [r for r in out if r["row_type"] == "transaction" and (r["debit"] > 0.01 or r["credit"] > 0.01)]
+    # A row with a real amount but BOTH date and id blank is structurally
+    # not a transaction - it's almost always a spreadsheet total/footer
+    # row (seen for real: an xlsx export whose last row was "=SUM(...)"
+    # for the Debit/Credit columns, with no date/id/description at all,
+    # producing numbers that happened to exactly match the file's own
+    # grand totals). Letting it through would double every subsequent sum
+    # it's included in. A genuine transaction always has at least one of
+    # date or id, even in the messiest formats seen so far. Only applies
+    # to row_type "transaction" - opening/closing balance rows have their
+    # own handling and are excluded from matching entirely regardless.
+    return [
+        r for r in out
+        if r["row_type"] == "transaction"
+        and (r["debit"] > 0.01 or r["credit"] > 0.01)
+        and (r["date"] or r["id"])
+    ]
 
 
 def amounts_close(a, b):
