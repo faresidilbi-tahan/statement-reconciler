@@ -29,7 +29,7 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-26-explain-difference-v2-accounting"
+BUILD_TAG = "2026-08-26-explain-difference-v4-timeout-fix"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-5"
@@ -74,7 +74,7 @@ def call_claude(prompt_text, max_tokens=900):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=45) as resp:
+    with urllib.request.urlopen(req, timeout=55) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     text_parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
@@ -86,11 +86,24 @@ def call_claude(prompt_text, max_tokens=900):
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         m = re.search(r"\{.*\}", raw, re.S)
         if m:
-            return json.loads(m.group(0))
-        raise
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+        # Genuinely truncated mid-response (most often max_tokens cut it
+        # off before the JSON closed) - no amount of regex extraction can
+        # recover text that was never generated. Surface the real cause
+        # instead of a bare parse error.
+        stop_reason = data.get("stop_reason", "unknown")
+        hint = " - likely ran out of room mid-response (raise max_tokens)" if stop_reason == "max_tokens" else ""
+        raise ValueError(
+            "Claude's response was truncated or malformed (stop_reason={}, {} chars received){}: {}".format(
+                stop_reason, len(raw), hint, e
+            )
+        )
 
 
 class handler(BaseHTTPRequestHandler):
@@ -124,7 +137,7 @@ class handler(BaseHTTPRequestHandler):
                 residual=residual,
                 issues_json=json.dumps(issues, ensure_ascii=False),
             )
-            result = call_claude(prompt)
+            result = call_claude(prompt, max_tokens=2500)
             result["build_tag"] = BUILD_TAG
             return self._send(200, result)
 
