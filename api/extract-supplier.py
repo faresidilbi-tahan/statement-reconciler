@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-stop-after-closing-balance"
+BUILD_TAG = "2026-08-26-remove-pdc-skipword"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -73,7 +73,17 @@ CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "total", "grand", "movement
                  "ending balance", "end date", "balance as at",
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
 SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
-              "p.o.box", "www.", "@", "pdc")
+              "p.o.box", "www.", "@")
+# "pdc" (postdated cheques) used to be in this list to skip a trailing
+# PDC table after the closing balance - removed because it silently
+# skipped every payment row on a real statement whose own payment
+# reference numbers are prefixed "JPDC-..." ("pdc" matched as a
+# substring inside "jpdc"), dropping every JPMT row in the entire
+# document. The "stop after closing balance" guard in
+# parse_words_strategy/parse_tables_strategy already excludes the
+# trailing PDC section by a precise mechanism (nothing after the closing
+# balance line is ever parsed), making this keyword both redundant and
+# actively dangerous.
 
 # A page-footer print timestamp ("Date 07/08/2026 Time 2:41:43PM") looks
 # just enough like a data row (has a date, "Time" isn't in any keyword
