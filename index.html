@@ -106,6 +106,23 @@
   #totals .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
   #totals .diff-ok { color: var(--green); }
   #totals .diff-bad { color: var(--red); }
+  #totals .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  #asof {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  #asof table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  #asof th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  #asof td { padding: 5px 10px 5px 0; text-align: right; }
+  #asof td:first-child { text-align: left; font-weight: 600; }
+  #asof .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  #asof .diff-ok { color: var(--green); }
+  #asof .diff-bad { color: var(--red); }
+  #asof .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   #bridge {
     display: none;
     background: #fff;
@@ -232,14 +249,15 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-pre-range-boundary-fix -->
-    <button id="compareBtn" disabled data-build="2026-08-26-pre-range-boundary-fix">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-asof-balance-panel -->
+    <button id="compareBtn" disabled data-build="2026-08-26-asof-balance-panel">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
 
   <div id="summary"></div>
   <div id="totals" style="display:none;"></div>
+  <div id="asof" style="display:none;"></div>
   <div id="bridge" style="display:none;"></div>
   <div class="downloads" id="downloads" style="display:none;">
     <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
@@ -470,6 +488,7 @@
       aiState === 'error' ? ' <span style="color:#b26a00;font-weight:400;font-size:11px;">(AI unavailable: ' + esc(errMsg || 'unknown error') + ')</span>' :
       aiState === 'toolarge' ? ' <span style="color:#999;font-weight:400;font-size:11px;" title="Too many rows to reliably sum in one AI call - showing exact numbers directly">(too many rows for AI, showing exact)</span>' : '';
     document.getElementById('totals').innerHTML =
+      '<div class="panel-label"><strong>Period change</strong> — how much moved during ' + esc(s.our_date_range ? s.our_date_range[0] + ' → ' + s.our_date_range[1] : 'this period') + ', matching individual transactions</div>' +
       '<table>' +
       '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
       '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + netSourceNote(s.our_net_source) + '</td></tr>' +
@@ -491,6 +510,67 @@
   // budget). No point spending tokens on a call whose failure mode is
   // already known - just show the exact numbers straight away.
   var AI_TOTALS_ROW_LIMIT = 150;
+
+  // "Balance as of [date]" - a completely different question from the
+  // Period panel above. Period asks "how much moved during this window,
+  // matched invoice by invoice" (the answer changes if any individual
+  // transaction is missing or mismatched). This asks the much simpler
+  // question a classic AP/AR reconciliation actually cares about: "as of
+  // one specific date, does the running balance on each side's own ledger
+  // agree" - it only needs the LAST balance figure printed on or before
+  // that date on each side, nothing about matching individual rows at
+  // all. Both are legitimate, different numbers for different purposes -
+  // this app previously only showed the Period figure, which caused real
+  // confusion when someone was mentally computing the as-of-date balance
+  // instead. Deliberately ignores the "From" date entirely, per how an
+  // as-of balance works: only the cutoff date at the end matters, not
+  // where you started looking.
+  //
+  // Sign conventions mirror the Period panel: "ours" (accsta04) writes
+  // credit-side balances as negative, so it's negated to the same
+  // positive-when-we-owe-them convention the supplier's own balance
+  // column already uses.
+  function findAsOfBalance(rows, asOfDate) {
+    var candidates = rows.filter(function (r) {
+      return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null &&
+        (!asOfDate || r.date <= asOfDate);
+    });
+    if (!candidates.length) return null;
+    candidates.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    var last = candidates[candidates.length - 1];
+    return { balance: last.balance, date: last.date };
+  }
+
+  function renderAsOfPanel(oursRowsAll, supplierRowsAll, asOfDate) {
+    var asofEl = document.getElementById('asof');
+    var ourPoint = findAsOfBalance(oursRowsAll, asOfDate);
+    var supPoint = findAsOfBalance(supplierRowsAll, asOfDate);
+    if (!ourPoint || !supPoint) {
+      asofEl.style.display = 'none';
+      return;
+    }
+
+    var ourOwed = Math.round(-ourPoint.balance * 100) / 100;
+    var supOwed = Math.round(supPoint.balance * 100) / 100;
+    var diff = Math.round((supOwed - ourOwed) * 100) / 100;
+    var diffAbs = Math.abs(diff);
+    var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
+    var diffSign = diff > 0 ? '+' : (diff < 0 ? '−' : '');
+
+    var mismatchNote = ourPoint.date !== supPoint.date
+      ? ' <span style="color:#b26a00;">— note: our last entry on/before this date is ' + esc(ourPoint.date) + ', supplier\'s is ' + esc(supPoint.date) + '; comparing the two most recent points each side actually has data for</span>'
+      : '';
+
+    asofEl.style.display = 'block';
+    asofEl.innerHTML =
+      '<div class="panel-label"><strong>Balance as of ' + esc(asOfDate || supPoint.date) + '</strong> — what each side\'s own running balance says we owe right now, ignoring the "From" date' + mismatchNote + '</div>' +
+      '<table>' +
+      '<tr><th></th><th>Balance owed</th></tr>' +
+      '<tr><td>Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourPoint.date) + ')</span></td><td>' + fmt(ourOwed) + '</td></tr>' +
+      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(supPoint.date) + ')</span></td><td>' + fmt(supOwed) + '</td></tr>' +
+      '<tr class="diff-row"><td>Difference</td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+      '</table>';
+  }
 
   function requestAiTotals(s, matched, issues) {
     var combinedCount = matched.length + issues.length;
@@ -682,6 +762,16 @@
   // call fails for any reason (no credits, no key, network), the
   // dashboard falls back to the plain auto-generated sentence rather than
   // showing nothing.
+  // Above this many issue rows, skip the AI narrative call entirely
+  // rather than attempt one that's likely to get cut off mid-response
+  // (seen for real: 556 missing rows produced a truncated, invalid JSON
+  // response even after slicing to 80 rows and raising max_tokens - a
+  // narrative trying to reference that many specific transactions runs
+  // out of room before finishing). The exact dollar breakdown above this
+  // sentence is unaffected either way; only the AI-written explanation
+  // is skipped.
+  var AI_EXPLANATION_ISSUE_LIMIT = 40;
+
   function renderBridge(s, issues) {
     var bridgeEl = document.getElementById('bridge');
     if (s.our_net === undefined || !issues.length) {
@@ -691,6 +781,16 @@
 
     var bridge = computeBridge(s, issues);
     bridgeEl.style.display = 'block';
+
+    if (issues.length > AI_EXPLANATION_ISSUE_LIMIT) {
+      bridgeEl.innerHTML =
+        '<div class="bridge-summary"><strong>Why the difference?</strong> ' +
+        esc(fallbackSentence(s, bridge.groups)) +
+        ' <span style="color:#999;">(too many differences for an AI narrative - showing the exact breakdown only)</span></div>' +
+        bridgeTableHtml(s, bridge.groups, bridge.residual);
+      return;
+    }
+
     bridgeEl.innerHTML =
       '<div class="bridge-summary"><strong>Why the difference?</strong> ' +
       '<span id="bridgeNarrative">' + esc(fallbackSentence(s, bridge.groups)) + ' <span style="color:#999;">Asking AI to explain…</span></span></div>' +
@@ -849,6 +949,7 @@
     btn.disabled = true;
     document.getElementById('summary').style.display = 'none';
     document.getElementById('totals').style.display = 'none';
+    document.getElementById('asof').style.display = 'none';
     document.getElementById('bridge').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
@@ -932,7 +1033,10 @@
         }
 
         return post('/api/compare', { ours: oursRows, supplier: supplierRows, supplier_pre_range_balance: supplierPreRangeBalance })
-          .then(function (cmp) { render(cmp, oursWarningsAll); });
+          .then(function (cmp) {
+            render(cmp, oursWarningsAll);
+            renderAsOfPanel(oursRowsAll, supplier.rows, dateTo || null);
+          });
       })
       .then(function () { setStatus('Done.'); })
       .catch(function (err) { setStatus(err.message, true); })
@@ -1018,6 +1122,8 @@
     document.getElementById('summary').innerHTML = '';
     document.getElementById('totals').style.display = 'none';
     document.getElementById('totals').innerHTML = '';
+    document.getElementById('asof').style.display = 'none';
+    document.getElementById('asof').innerHTML = '';
     document.getElementById('bridge').style.display = 'none';
     document.getElementById('bridge').innerHTML = '';
     document.getElementById('tableWrap').style.display = 'none';
