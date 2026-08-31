@@ -28,7 +28,7 @@ import re
 import urllib.request
 import urllib.error
 
-BUILD_TAG = "2026-08-26-ai-totals-v4-compact-more-room"
+BUILD_TAG = "2026-08-26-ai-totals-v5-timeout-fix"
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-5"
@@ -69,7 +69,7 @@ def call_claude(prompt_text):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=55) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     text_parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
