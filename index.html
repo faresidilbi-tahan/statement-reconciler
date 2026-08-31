@@ -251,8 +251,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-view-mode-toggle -->
-    <button id="compareBtn" disabled data-build="2026-08-26-view-mode-toggle">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-scope-bridge-to-in-range -->
+    <button id="compareBtn" disabled data-build="2026-08-26-scope-bridge-to-in-range">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -698,7 +698,19 @@
     DIFF_KINDS.concat(['missing_in_supplier', 'missing_in_tahan']).forEach(function (k) {
       groups[k] = { count: 0, amount: 0 };
     });
+    var excludedOutOfRange = 0;
     issues.forEach(function (row) {
+      // A missing_in_tahan row dated outside our file's own date range is
+      // already excluded from supplier_total_debit/credit server-side
+      // (see compare.py's out_of_our_range scoping) - it has zero effect
+      // on net_difference. Including it here would badly distort the
+      // breakdown: seen for real, 104 of 106 "missing" rows were
+      // unrelated prior-period history, inflating this table by over $1M
+      // while the real gap was a few thousand dollars.
+      if (row.issue === 'missing_in_tahan' && row.out_of_our_range) {
+        excludedOutOfRange++;
+        return;
+      }
       if (!groups[row.issue]) groups[row.issue] = { count: 0, amount: 0 };
       groups[row.issue].count++;
       groups[row.issue].amount += issueContribution(row);
@@ -709,7 +721,7 @@
     Object.keys(groups).forEach(function (k) { explained += groups[k].amount; });
     var residual = Math.round((s.net_difference - explained) * 100) / 100;
 
-    return { groups: groups, residual: residual };
+    return { groups: groups, residual: residual, excludedOutOfRange: excludedOutOfRange };
   }
 
   function bridgeTableHtml(s, groups, residual) {
@@ -758,8 +770,11 @@
 
     var bridge = computeBridge(s, issues);
     bridgeEl.className = 'breakdown-block';
+    var excludedNote = bridge.excludedOutOfRange > 0
+      ? ' <span style="color:#999;font-weight:400;">(' + bridge.excludedOutOfRange + ' more row' + (bridge.excludedOutOfRange === 1 ? '' : 's') + ' dated outside your file\'s own period excluded here - they don\'t affect this total; see the full differences table below)</span>'
+      : '';
     bridgeEl.innerHTML =
-      '<div class="bridge-summary"><strong>Why the difference?</strong> ' + esc(fallbackSentence(s, bridge.groups)) + '</div>' +
+      '<div class="bridge-summary"><strong>Why the difference?</strong> ' + esc(fallbackSentence(s, bridge.groups)) + excludedNote + '</div>' +
       bridgeTableHtml(s, bridge.groups, bridge.residual);
   }
 
