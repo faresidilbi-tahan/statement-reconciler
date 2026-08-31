@@ -178,6 +178,7 @@
   .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; font-size: 13.5px; color: var(--muted); }
   .filter-row label { display: flex; align-items: center; gap: 6px; }
   .filter-row input[type="date"] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .filter-row select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); }
   .filter-row button { background: #fff; color: var(--blue); border: 1px solid var(--blue); padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; }
 
   .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
@@ -241,9 +242,17 @@
     <span id="dateHint"></span>
   </div>
 
+  <div class="filter-row">
+    <label>Show <select id="viewMode">
+      <option value="both">Both boxes</option>
+      <option value="period">Period change only</option>
+      <option value="asof">Balance as of only</option>
+    </select></label>
+  </div>
+
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-remove-all-ai -->
-    <button id="compareBtn" disabled data-build="2026-08-26-remove-all-ai">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-view-mode-toggle -->
+    <button id="compareBtn" disabled data-build="2026-08-26-view-mode-toggle">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -447,6 +456,22 @@
   var lastMissingOurs = [];      // missing_in_tahan: rows only on supplier side
   var lastMissingSupplier = [];  // missing_in_supplier: rows only on our side
   var lastDiffs = [];
+  var totalsHasContent = false;  // whether the Period box currently has real data to show
+  var asofHasContent = false;    // whether the Balance-as-of box currently has real data to show
+
+  // Applies the "Show" dropdown on top of whatever content actually
+  // exists - a box with no data for this comparison stays hidden
+  // regardless of the dropdown, and switching the dropdown never
+  // re-runs Compare, just toggles visibility of what's already rendered.
+  function applyViewMode() {
+    var mode = document.getElementById('viewMode').value;
+    var totalsEl = document.getElementById('totals');
+    var asofEl = document.getElementById('asof');
+    totalsEl.style.display = (totalsHasContent && mode !== 'asof') ? 'block' : 'none';
+    asofEl.style.display = (asofHasContent && mode !== 'period') ? 'block' : 'none';
+  }
+
+  document.getElementById('viewMode').addEventListener('change', applyViewMode);
 
   // Renders the Debit/Credit/Net table - always the exact deterministic
   // numbers from compare.py, no AI involved.
@@ -510,7 +535,8 @@
     var ourPoint = findAsOfBalance(oursRowsAll, asOfDate);
     var supPoint = findAsOfBalance(supplierRowsAll, asOfDate);
     if (!ourPoint || !supPoint) {
-      asofEl.style.display = 'none';
+      asofHasContent = false;
+      applyViewMode();
       return;
     }
 
@@ -540,7 +566,7 @@
     var ourCum = cumulative(oursRowsAll, ourPoint.date);
     var supCum = cumulative(supplierRowsAll, supPoint.date);
 
-    asofEl.style.display = 'block';
+    asofHasContent = true;
     asofEl.innerHTML =
       '<div class="panel-label"><strong>Balance as of ' + esc(asOfDate || supPoint.date) + '</strong> — what each side\'s own running balance says we owe right now, ignoring the "From" date' + mismatchNote + '</div>' +
       '<table>' +
@@ -551,6 +577,7 @@
       '</table>';
 
     renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, diff);
+    applyViewMode();
   }
 
   function renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, asOfDiff) {
@@ -615,15 +642,15 @@
       ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>' +
       idNote;
 
-    var totalsEl = document.getElementById('totals');
     if (s.our_net !== undefined) {
-      totalsEl.style.display = 'block';
+      totalsHasContent = true;
       renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
         s.supplier_total_debit, s.supplier_total_credit, s.supplier_net);
       renderTotalsBreakdown(s, issues);
     } else {
-      totalsEl.style.display = 'none';
+      totalsHasContent = false;
     }
+    applyViewMode();
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -1012,6 +1039,8 @@
     lastDiffs = [];
     document.getElementById('summary').style.display = 'none';
     document.getElementById('summary').innerHTML = '';
+    totalsHasContent = false;
+    asofHasContent = false;
     document.getElementById('totals').style.display = 'none';
     document.getElementById('totalsMetrics').innerHTML = '';
     document.getElementById('totalsBreakdown').innerHTML = '';
