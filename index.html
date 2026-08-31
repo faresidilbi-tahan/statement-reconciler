@@ -251,8 +251,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-asof-multifile-fix -->
-    <button id="compareBtn" disabled data-build="2026-08-26-asof-multifile-fix">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-remove-asof-breakdown -->
+    <button id="compareBtn" disabled data-build="2026-08-26-remove-asof-breakdown">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -609,51 +609,7 @@
       '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
       '</table>' + perFileBreakdown;
 
-    renderAsOfBreakdown(oursFilesRows, s, supplierPreRangeBalance, oursMinDate, diff);
     applyViewMode();
-  }
-
-  function renderAsOfBreakdown(oursFilesRows, s, supplierPreRangeBalance, oursMinDate, asOfDiff) {
-    var asofEl = document.getElementById('asof');
-    if (!s || s.net_difference === undefined || supplierPreRangeBalance === null || supplierPreRangeBalance === undefined) return;
-
-    // Sum every file's own opening-balance row - same multi-file
-    // reasoning as the panel above: each file has its own separate
-    // opening balance, and the combined pre-period position is the SUM
-    // of all of them, not just the first one found.
-    var openingRows = [];
-    oursFilesRows.forEach(function (rows) {
-      var r = rows.filter(function (row) { return row.row_type === 'opening_balance' && row.balance !== undefined && row.balance !== null; })[0];
-      if (r) openingRows.push(r);
-    });
-    if (!openingRows.length) return;
-
-    var ourOpeningOwed = Math.round(openingRows.reduce(function (sum, r) { return sum - r.balance; }, 0) * 100) / 100;
-    var supplierPreRangeOwed = Math.round(supplierPreRangeBalance * 100) / 100;
-    var openingImbalance = Math.round((supplierPreRangeOwed - ourOpeningOwed) * 100) / 100;
-    var periodDiff = s.net_difference;
-    var reconstructed = Math.round((openingImbalance - periodDiff) * 100) / 100;
-    var checksOut = Math.abs(reconstructed - asOfDiff) <= 1;
-
-    function row(label, val, isTotal) {
-      var sign = val > 0 ? '+' : (val < 0 ? '−' : '');
-      return '<tr' + (isTotal ? ' class="bridge-total"' : '') + '><td>' + label + '</td><td class="num">' + sign + fmt(Math.abs(val)) + '</td></tr>';
-    }
-
-    var html =
-      '<div class="bridge-summary"><strong>Why ' + fmt(Math.abs(asOfDiff)) + '?</strong> It breaks into an imbalance that already existed before ' +
-      esc(oursMinDate) + ' (before this period\'s transactions), minus this period\'s own difference (shown in the Period box above).</div>' +
-      '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' +
-      row('Opening imbalance <span style="color:#999;font-weight:400;">(as of ' + esc(oursMinDate) + ', before this period)</span>', openingImbalance) +
-      row('Minus: this period\'s difference <span style="color:#999;font-weight:400;">(see Period box above)</span>', -periodDiff) +
-      row('= Balance-as-of difference', reconstructed, true) +
-      '</table>' +
-      (checksOut ? '' : '<div style="color:var(--amber);font-size:12px;margin-top:6px;">⚠ This doesn\'t quite reconcile with the figure above ($' + fmt(Math.abs(asOfDiff)) + ') - likely extra activity between the two sides\' most recent entries falling on different dates.</div>');
-
-    var breakdownDiv = document.createElement('div');
-    breakdownDiv.className = 'breakdown-block';
-    breakdownDiv.innerHTML = html;
-    asofEl.appendChild(breakdownDiv);
   }
 
   function render(result, warnings) {
