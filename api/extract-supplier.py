@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-strategy-sanity-check"
+BUILD_TAG = "2026-08-26-stop-after-closing-balance"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -398,7 +398,18 @@ def word_column(w, intervals):
 def parse_words_strategy(pdf):
     rows, warnings = [], []
     anchors = None
+    # Once a closing-balance line is seen, NOTHING after it is ever a real
+    # transaction - it's always trailing statement metadata (postdated
+    # check lists, promissory notes, signature blocks, disclaimers). Seen
+    # for real: a "PDC" (postdated cheques) table after the closing
+    # balance got misparsed as a transaction row, with the check's Due
+    # Date column mistaken for an id and its Amount column mistaken for a
+    # debit - a completely different table structure that happens to also
+    # have dates and amounts in columns.
+    seen_closing = False
     for page_no, page in enumerate(pdf.pages, start=1):
+        if seen_closing:
+            break
         lines = group_lines(page)
         page_anchors = find_header(lines)
         if page_anchors:
@@ -410,6 +421,8 @@ def parse_words_strategy(pdf):
         prev_was_data = False
         prev_date = ""
         for line in lines:
+            if seen_closing:
+                break
             raw = " ".join(w["text"] for w in line).strip()
             if not raw:
                 continue
@@ -451,6 +464,8 @@ def parse_words_strategy(pdf):
                     prev_date = row["date"]
                 rows.append(row)
                 prev_was_data = True
+                if row["row_type"] == "closing_balance":
+                    seen_closing = True
             elif prev_was_data and is_continuation(cells) and rows:
                 extra = (cells.get("description", "") + " " + cells.get("id", "")).strip()
                 rows[-1]["description"] = (rows[-1]["description"] + " " + extra).strip()
@@ -514,6 +529,7 @@ def parse_tables_strategy(pdf):
     rows, warnings = [], []
     found_any = False
     last_col_map, last_id_candidates, last_col_count = None, [], None
+    seen_closing = False  # see the same guard/comment in parse_words_strategy
     prev_date = ""  # persists across separate table regions AND pages, since
                     # a single logical table can get split into multiple
                     # detected regions (e.g. around a page's mid-content
@@ -521,7 +537,11 @@ def parse_tables_strategy(pdf):
                     # boundary shouldn't lose its inherited date just
                     # because pdfplumber happened to see it as a new table.
     for page in pdf.pages:
+        if seen_closing:
+            break
         for table in page.find_tables():
+            if seen_closing:
+                break
             table_rows = table.extract()
             if not table_rows:
                 continue
@@ -561,6 +581,8 @@ def parse_tables_strategy(pdf):
             found_any = True
             prev_was_data = False
             for cells in data_rows:
+                if seen_closing:
+                    break
                 cells = [(c or "").replace("\n", " ").strip() for c in cells]
 
                 def get(field):
@@ -612,6 +634,8 @@ def parse_tables_strategy(pdf):
                         prev_date = row["date"]
                     rows.append(row)
                     prev_was_data = True
+                    if row["row_type"] == "closing_balance":
+                        seen_closing = True
                 elif prev_was_data and is_continuation(celld) and rows:
                     extra = (celld.get("description", "") + " " + celld.get("id", "")).strip()
                     if extra:
