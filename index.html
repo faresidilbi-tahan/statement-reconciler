@@ -159,7 +159,7 @@
   #tableWrap th { background: #f0f3f7; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
   #tableWrap td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   #tableWrap tr:last-child td { border-bottom: 0; }
-  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 10%; }
+  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 15%; }
   #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
   #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 9%; }
   #tableWrap th:nth-child(4), #tableWrap td:nth-child(4) { width: 30%; }
@@ -251,8 +251,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-scope-bridge-to-in-range -->
-    <button id="compareBtn" disabled data-build="2026-08-26-scope-bridge-to-in-range">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-asof-multifile-fix -->
+    <button id="compareBtn" disabled data-build="2026-08-26-asof-multifile-fix">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -519,6 +519,16 @@
     return { balance: last.balance, date: last.date };
   }
 
+  function asOfCumulative(rows, cutoffDate) {
+    var d = 0, c = 0;
+    rows.forEach(function (r) {
+      if (r.row_type === 'transaction' && (!cutoffDate || (r.date && r.date <= cutoffDate))) {
+        d += r.debit || 0; c += r.credit || 0;
+      }
+    });
+    return { debit: Math.round(d * 100) / 100, credit: Math.round(c * 100) / 100 };
+  }
+
   // Every dollar of an as-of gap decomposes cleanly into two pieces, both
   // already computed elsewhere in this app - no new arithmetic to trust:
   //   Opening imbalance: the gap that already existed before this period
@@ -530,64 +540,95 @@
   // algebraically - verified against real data (a case where Period was
   // +903.41 and Opening imbalance was +3,897.48 produced exactly the
   // +2,994.07 as-of gap: 3897.48 − 903.41 = 2994.07).
-  function renderAsOfPanel(oursRowsAll, supplierRowsAll, asOfDate, s, supplierPreRangeBalance, oursMinDate) {
+  //
+  // "oursFilesRows" is an ARRAY OF ARRAYS - one row-list per uploaded
+  // "our" file, not one merged list. This matters: each uploaded PDF is
+  // its own independent running account (seen for real - two files for
+  // two different sub-accounts of the same supplier, each with its own
+  // closing balance). Merging them into one flat list and taking "the
+  // last row's balance" would silently use only whichever file's last
+  // row happened to be most recent, dropping the other file's balance
+  // entirely. The correct combined "amount owed" is the SUM of each
+  // file's own last balance on/before the cutoff.
+  function renderAsOfPanel(oursFilesRows, supplierRowsAll, asOfDate, s, supplierPreRangeBalance, oursMinDate) {
     var asofEl = document.getElementById('asof');
-    var ourPoint = findAsOfBalance(oursRowsAll, asOfDate);
+    var ourPerFile = oursFilesRows.map(function (rows) { return findAsOfBalance(rows, asOfDate); });
+    var ourValidPoints = ourPerFile.filter(Boolean);
     var supPoint = findAsOfBalance(supplierRowsAll, asOfDate);
-    if (!ourPoint || !supPoint) {
+    if (!ourValidPoints.length || !supPoint) {
       asofHasContent = false;
       applyViewMode();
       return;
     }
 
-    var ourOwed = Math.round(-ourPoint.balance * 100) / 100;
+    var ourOwed = Math.round(ourValidPoints.reduce(function (sum, p) { return sum - p.balance; }, 0) * 100) / 100;
     var supOwed = Math.round(supPoint.balance * 100) / 100;
     var diff = Math.round((supOwed - ourOwed) * 100) / 100;
     var diffAbs = Math.abs(diff);
     var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
     var diffSign = diff > 0 ? '+' : (diff < 0 ? '−' : '');
 
-    var mismatchNote = ourPoint.date !== supPoint.date
-      ? ' <span style="color:#b26a00;">— note: our last entry on/before this date is ' + esc(ourPoint.date) + ', supplier\'s is ' + esc(supPoint.date) + '; comparing the two most recent points each side actually has data for</span>'
+    var ourDates = ourValidPoints.map(function (p) { return p.date; });
+    var uniqueOurDates = ourDates.filter(function (d, i) { return ourDates.indexOf(d) === i; });
+    var ourDateLabel = uniqueOurDates.length === 1 ? uniqueOurDates[0] : ourDates.slice().sort().slice(-1)[0];
+
+    var mismatchNote = (uniqueOurDates.length !== 1 || uniqueOurDates[0] !== supPoint.date)
+      ? ' <span style="color:#b26a00;">— note: comparing each side\'s most recent available balance, which may fall on different dates' + (oursFilesRows.length > 1 ? ' across our files' : '') + '</span>'
       : '';
 
-    // Cumulative Debit/Credit up to the as-of point, for context - not
-    // used in the difference math (that's balance-based), just shown so
-    // this panel doesn't look like it's hiding the underlying activity.
-    function cumulative(rows, cutoffDate) {
-      var d = 0, c = 0;
-      rows.forEach(function (r) {
-        if (r.row_type === 'transaction' && (!cutoffDate || (r.date && r.date <= cutoffDate))) {
-          d += r.debit || 0; c += r.credit || 0;
-        }
-      });
-      return { debit: Math.round(d * 100) / 100, credit: Math.round(c * 100) / 100 };
-    }
-    var ourCum = cumulative(oursRowsAll, ourPoint.date);
-    var supCum = cumulative(supplierRowsAll, supPoint.date);
+    var ourCum = { debit: 0, credit: 0 };
+    oursFilesRows.forEach(function (rows, idx) {
+      var point = ourPerFile[idx];
+      if (!point) return;
+      var c = asOfCumulative(rows, point.date);
+      ourCum.debit += c.debit; ourCum.credit += c.credit;
+    });
+    ourCum.debit = Math.round(ourCum.debit * 100) / 100;
+    ourCum.credit = Math.round(ourCum.credit * 100) / 100;
+    var supCum = asOfCumulative(supplierRowsAll, supPoint.date);
+
+    var perFileBreakdown = oursFilesRows.length > 1
+      ? '<div style="font-size:12px;color:#999;margin-top:6px;">Our file total is the sum of each file\'s own balance: ' +
+        oursFilesRows.map(function (rows, idx) {
+          var p = ourPerFile[idx];
+          return p ? (fmt(Math.round(-p.balance * 100) / 100) + ' (as of ' + esc(p.date) + ')') : 'no data in range';
+        }).join(' + ') + '</div>'
+      : '';
+
+    var ourLabel = oursFilesRows.length > 1
+      ? 'Our files <span style="font-weight:400;color:#999;font-size:12px;">(' + oursFilesRows.length + ' combined, as of ' + esc(ourDateLabel) + ')</span>'
+      : 'Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourDateLabel) + ')</span>';
 
     asofHasContent = true;
     asofEl.innerHTML =
       '<div class="panel-label"><strong>Balance as of ' + esc(asOfDate || supPoint.date) + '</strong> — what each side\'s own running balance says we owe right now, ignoring the "From" date' + mismatchNote + '</div>' +
       '<table>' +
       '<tr><th></th><th>Debit</th><th>Credit</th><th>Balance owed</th></tr>' +
-      '<tr><td>Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourPoint.date) + ')</span></td><td>' + fmt(ourCum.debit) + '</td><td>' + fmt(ourCum.credit) + '</td><td>' + fmt(ourOwed) + '</td></tr>' +
+      '<tr><td>' + ourLabel + '</td><td>' + fmt(ourCum.debit) + '</td><td>' + fmt(ourCum.credit) + '</td><td>' + fmt(ourOwed) + '</td></tr>' +
       '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(supPoint.date) + ')</span></td><td>' + fmt(supCum.debit) + '</td><td>' + fmt(supCum.credit) + '</td><td>' + fmt(supOwed) + '</td></tr>' +
       '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
-      '</table>';
+      '</table>' + perFileBreakdown;
 
-    renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, diff);
+    renderAsOfBreakdown(oursFilesRows, s, supplierPreRangeBalance, oursMinDate, diff);
     applyViewMode();
   }
 
-  function renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, asOfDiff) {
+  function renderAsOfBreakdown(oursFilesRows, s, supplierPreRangeBalance, oursMinDate, asOfDiff) {
     var asofEl = document.getElementById('asof');
     if (!s || s.net_difference === undefined || supplierPreRangeBalance === null || supplierPreRangeBalance === undefined) return;
 
-    var ourOpeningRow = oursRowsAll.filter(function (r) { return r.row_type === 'opening_balance' && r.balance !== undefined && r.balance !== null; })[0];
-    if (!ourOpeningRow) return;
+    // Sum every file's own opening-balance row - same multi-file
+    // reasoning as the panel above: each file has its own separate
+    // opening balance, and the combined pre-period position is the SUM
+    // of all of them, not just the first one found.
+    var openingRows = [];
+    oursFilesRows.forEach(function (rows) {
+      var r = rows.filter(function (row) { return row.row_type === 'opening_balance' && row.balance !== undefined && row.balance !== null; })[0];
+      if (r) openingRows.push(r);
+    });
+    if (!openingRows.length) return;
 
-    var ourOpeningOwed = Math.round(-ourOpeningRow.balance * 100) / 100;
+    var ourOpeningOwed = Math.round(openingRows.reduce(function (sum, r) { return sum - r.balance; }, 0) * 100) / 100;
     var supplierPreRangeOwed = Math.round(supplierPreRangeBalance * 100) / 100;
     var openingImbalance = Math.round((supplierPreRangeOwed - ourOpeningOwed) * 100) / 100;
     var periodDiff = s.net_difference;
@@ -969,7 +1010,7 @@
         return post('/api/compare', { ours: oursRows, supplier: supplierRows, supplier_pre_range_balance: supplierPreRangeBalance })
           .then(function (cmp) {
             render(cmp, oursWarningsAll);
-            renderAsOfPanel(oursRowsAll, supplier.rows, dateTo || null, cmp.summary, supplierPreRangeBalance, oursMinDate);
+            renderAsOfPanel(oursResultsList.map(function (r) { return r.rows; }), supplier.rows, dateTo || null, cmp.summary, supplierPreRangeBalance, oursMinDate);
           });
       })
       .then(function () { setStatus('Done.'); })
