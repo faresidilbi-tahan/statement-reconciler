@@ -123,24 +123,17 @@
   #asof .diff-ok { color: var(--green); }
   #asof .diff-bad { color: var(--red); }
   #asof .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-  #bridge {
-    display: none;
-    background: #fff;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 14px 18px;
-    margin-bottom: 14px;
-  }
-  #bridge .bridge-summary { font-size: 13.5px; margin-bottom: 10px; }
-  #bridge table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  #bridge th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
-  #bridge td { padding: 5px 10px 5px 0; }
-  #bridge td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  #bridge .bridge-total td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
-  #bridge .bridge-residual.ok td { color: var(--green); }
-  #bridge .bridge-residual.bad td { color: var(--amber); }
-  #bridge .bridge-themes { margin: 6px 0 12px; padding-left: 18px; font-size: 13px; color: var(--muted); }
-  #bridge .bridge-themes li { margin-bottom: 4px; }
+  .breakdown-block { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .breakdown-block .bridge-summary { font-size: 13.5px; margin-bottom: 10px; }
+  .breakdown-block table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .breakdown-block th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  .breakdown-block td { padding: 5px 10px 5px 0; }
+  .breakdown-block td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .breakdown-block .bridge-total td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  .breakdown-block .bridge-residual.ok td { color: var(--green); }
+  .breakdown-block .bridge-residual.bad td { color: var(--amber); }
+  .breakdown-block .bridge-themes { margin: 6px 0 12px; padding-left: 18px; font-size: 13px; color: var(--muted); }
+  .breakdown-block .bridge-themes li { margin-bottom: 4px; }
   #warnings {
     display: none;
     border: 1px solid var(--line);
@@ -249,16 +242,18 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-asof-balance-panel -->
-    <button id="compareBtn" disabled data-build="2026-08-26-asof-balance-panel">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-boxes-reorganized -->
+    <button id="compareBtn" disabled data-build="2026-08-26-boxes-reorganized">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
 
   <div id="summary"></div>
-  <div id="totals" style="display:none;"></div>
+  <div id="totals" style="display:none;">
+    <div id="totalsMetrics"></div>
+    <div id="totalsBreakdown"></div>
+  </div>
   <div id="asof" style="display:none;"></div>
-  <div id="bridge" style="display:none;"></div>
   <div class="downloads" id="downloads" style="display:none;">
     <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
     <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
@@ -467,16 +462,6 @@
   // total) or is the debit/credit calculation itself (either because
   // Balance data wasn't available, or because it disagreed enough that
   // trusting it would have been the riskier choice).
-  function netSourceNote(source) {
-    if (source === 'balance') {
-      return ' <span style="color:var(--green);font-weight:400;font-size:10.5px;" title="Matches the debit/credit total, so this is read from the file\'s own Balance column">✓ from Balance col.</span>';
-    }
-    if (source === 'debit_credit') {
-      return ' <span style="color:#999;font-weight:400;font-size:10.5px;" title="Balance-column data wasn\'t available, or it disagreed with the debit/credit total by more than $1 - showing the debit/credit calculation instead">(calculated)</span>';
-    }
-    return '';
-  }
-
   function renderTotalsTable(s, ourDebit, ourCredit, ourNet, supDebit, supCredit, supNet, aiState, errMsg) {
     var diffAbs = Math.abs(s.net_difference);
     var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
@@ -487,12 +472,12 @@
       aiState === 'pending' ? ' <span style="color:#999;font-weight:400;font-size:11px;">computing with AI…</span>' :
       aiState === 'error' ? ' <span style="color:#b26a00;font-weight:400;font-size:11px;">(AI unavailable: ' + esc(errMsg || 'unknown error') + ')</span>' :
       aiState === 'toolarge' ? ' <span style="color:#999;font-weight:400;font-size:11px;" title="Too many rows to reliably sum in one AI call - showing exact numbers directly">(too many rows for AI, showing exact)</span>' : '';
-    document.getElementById('totals').innerHTML =
+    document.getElementById('totalsMetrics').innerHTML =
       '<div class="panel-label"><strong>Period change</strong> — how much moved during ' + esc(s.our_date_range ? s.our_date_range[0] + ' → ' + s.our_date_range[1] : 'this period') + ', matching individual transactions</div>' +
       '<table>' +
       '<tr><th>' + badge + '</th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
-      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + netSourceNote(s.our_net_source) + '</td></tr>' +
-      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(supDebit) + '</td><td>' + fmt(supCredit) + '</td><td>' + fmt(supNet) + netSourceNote(s.supplier_net_source) + '</td></tr>' +
+      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + '</td></tr>' +
+      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(supDebit) + '</td><td>' + fmt(supCredit) + '</td><td>' + fmt(supNet) + '</td></tr>' +
       '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
       '</table>';
   }
@@ -541,7 +526,18 @@
     return { balance: last.balance, date: last.date };
   }
 
-  function renderAsOfPanel(oursRowsAll, supplierRowsAll, asOfDate) {
+  // Every dollar of an as-of gap decomposes cleanly into two pieces, both
+  // already computed elsewhere in this app - no new arithmetic to trust:
+  //   Opening imbalance: the gap that already existed before this period
+  //     even started (each side's own balance right before the period's
+  //     first transaction - a pre-existing disagreement, not something
+  //     this period's transactions caused).
+  //   Period difference: the Period panel's own Difference figure above.
+  // As-of difference = Opening imbalance − Period difference, always,
+  // algebraically - verified against real data (a case where Period was
+  // +903.41 and Opening imbalance was +3,897.48 produced exactly the
+  // +2,994.07 as-of gap: 3897.48 − 903.41 = 2994.07).
+  function renderAsOfPanel(oursRowsAll, supplierRowsAll, asOfDate, s, supplierPreRangeBalance, oursMinDate) {
     var asofEl = document.getElementById('asof');
     var ourPoint = findAsOfBalance(oursRowsAll, asOfDate);
     var supPoint = findAsOfBalance(supplierRowsAll, asOfDate);
@@ -561,15 +557,67 @@
       ? ' <span style="color:#b26a00;">— note: our last entry on/before this date is ' + esc(ourPoint.date) + ', supplier\'s is ' + esc(supPoint.date) + '; comparing the two most recent points each side actually has data for</span>'
       : '';
 
+    // Cumulative Debit/Credit up to the as-of point, for context - not
+    // used in the difference math (that's balance-based), just shown so
+    // this panel doesn't look like it's hiding the underlying activity.
+    function cumulative(rows, cutoffDate) {
+      var d = 0, c = 0;
+      rows.forEach(function (r) {
+        if (r.row_type === 'transaction' && (!cutoffDate || (r.date && r.date <= cutoffDate))) {
+          d += r.debit || 0; c += r.credit || 0;
+        }
+      });
+      return { debit: Math.round(d * 100) / 100, credit: Math.round(c * 100) / 100 };
+    }
+    var ourCum = cumulative(oursRowsAll, ourPoint.date);
+    var supCum = cumulative(supplierRowsAll, supPoint.date);
+
     asofEl.style.display = 'block';
     asofEl.innerHTML =
       '<div class="panel-label"><strong>Balance as of ' + esc(asOfDate || supPoint.date) + '</strong> — what each side\'s own running balance says we owe right now, ignoring the "From" date' + mismatchNote + '</div>' +
       '<table>' +
-      '<tr><th></th><th>Balance owed</th></tr>' +
-      '<tr><td>Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourPoint.date) + ')</span></td><td>' + fmt(ourOwed) + '</td></tr>' +
-      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(supPoint.date) + ')</span></td><td>' + fmt(supOwed) + '</td></tr>' +
-      '<tr class="diff-row"><td>Difference</td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+      '<tr><th></th><th>Debit</th><th>Credit</th><th>Balance owed</th></tr>' +
+      '<tr><td>Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourPoint.date) + ')</span></td><td>' + fmt(ourCum.debit) + '</td><td>' + fmt(ourCum.credit) + '</td><td>' + fmt(ourOwed) + '</td></tr>' +
+      '<tr><td>Supplier <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(supPoint.date) + ')</span></td><td>' + fmt(supCum.debit) + '</td><td>' + fmt(supCum.credit) + '</td><td>' + fmt(supOwed) + '</td></tr>' +
+      '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
       '</table>';
+
+    renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, diff);
+  }
+
+  function renderAsOfBreakdown(oursRowsAll, s, supplierPreRangeBalance, oursMinDate, asOfDiff) {
+    var asofEl = document.getElementById('asof');
+    if (!s || s.net_difference === undefined || supplierPreRangeBalance === null || supplierPreRangeBalance === undefined) return;
+
+    var ourOpeningRow = oursRowsAll.filter(function (r) { return r.row_type === 'opening_balance' && r.balance !== undefined && r.balance !== null; })[0];
+    if (!ourOpeningRow) return;
+
+    var ourOpeningOwed = Math.round(-ourOpeningRow.balance * 100) / 100;
+    var supplierPreRangeOwed = Math.round(supplierPreRangeBalance * 100) / 100;
+    var openingImbalance = Math.round((supplierPreRangeOwed - ourOpeningOwed) * 100) / 100;
+    var periodDiff = s.net_difference;
+    var reconstructed = Math.round((openingImbalance - periodDiff) * 100) / 100;
+    var checksOut = Math.abs(reconstructed - asOfDiff) <= 1;
+
+    function row(label, val, isTotal) {
+      var sign = val > 0 ? '+' : (val < 0 ? '−' : '');
+      return '<tr' + (isTotal ? ' class="bridge-total"' : '') + '><td>' + label + '</td><td class="num">' + sign + fmt(Math.abs(val)) + '</td></tr>';
+    }
+
+    var html =
+      '<div class="bridge-summary"><strong>Why ' + fmt(Math.abs(asOfDiff)) + '?</strong> It breaks into an imbalance that already existed before ' +
+      esc(oursMinDate) + ' (before this period\'s transactions), minus this period\'s own difference (shown in the Period box above).</div>' +
+      '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' +
+      row('Opening imbalance <span style="color:#999;font-weight:400;">(as of ' + esc(oursMinDate) + ', before this period)</span>', openingImbalance) +
+      row('Minus: this period\'s difference <span style="color:#999;font-weight:400;">(see Period box above)</span>', -periodDiff) +
+      row('= Balance-as-of difference', reconstructed, true) +
+      '</table>' +
+      (checksOut ? '' : '<div style="color:var(--amber);font-size:12px;margin-top:6px;">⚠ This doesn\'t quite reconcile with the figure above ($' + fmt(Math.abs(asOfDiff)) + ') - likely extra activity between the two sides\' most recent entries falling on different dates.</div>');
+
+    var breakdownDiv = document.createElement('div');
+    breakdownDiv.className = 'breakdown-block';
+    breakdownDiv.innerHTML = html;
+    asofEl.appendChild(breakdownDiv);
   }
 
   function requestAiTotals(s, matched, issues) {
@@ -650,11 +698,10 @@
       renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
         s.supplier_total_debit, s.supplier_total_credit, s.supplier_net, false);
       requestAiTotals(s, matched, issues);
+      renderTotalsBreakdown(s, issues);
     } else {
       totalsEl.style.display = 'none';
     }
-
-    renderBridge(s, issues);
 
     var warnEl = document.getElementById('warnings');
     if (warnings && warnings.length) {
@@ -772,15 +819,15 @@
   // is skipped.
   var AI_EXPLANATION_ISSUE_LIMIT = 40;
 
-  function renderBridge(s, issues) {
-    var bridgeEl = document.getElementById('bridge');
+  function renderTotalsBreakdown(s, issues) {
+    var bridgeEl = document.getElementById('totalsBreakdown');
     if (s.our_net === undefined || !issues.length) {
-      bridgeEl.style.display = 'none';
+      bridgeEl.innerHTML = '';
       return;
     }
 
     var bridge = computeBridge(s, issues);
-    bridgeEl.style.display = 'block';
+    bridgeEl.className = 'breakdown-block';
 
     if (issues.length > AI_EXPLANATION_ISSUE_LIMIT) {
       bridgeEl.innerHTML =
@@ -950,7 +997,6 @@
     document.getElementById('summary').style.display = 'none';
     document.getElementById('totals').style.display = 'none';
     document.getElementById('asof').style.display = 'none';
-    document.getElementById('bridge').style.display = 'none';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('allclear').style.display = 'none';
     document.getElementById('filterBar').style.display = 'none';
@@ -1035,7 +1081,7 @@
         return post('/api/compare', { ours: oursRows, supplier: supplierRows, supplier_pre_range_balance: supplierPreRangeBalance })
           .then(function (cmp) {
             render(cmp, oursWarningsAll);
-            renderAsOfPanel(oursRowsAll, supplier.rows, dateTo || null);
+            renderAsOfPanel(oursRowsAll, supplier.rows, dateTo || null, cmp.summary, supplierPreRangeBalance, oursMinDate);
           });
       })
       .then(function () { setStatus('Done.'); })
@@ -1121,11 +1167,10 @@
     document.getElementById('summary').style.display = 'none';
     document.getElementById('summary').innerHTML = '';
     document.getElementById('totals').style.display = 'none';
-    document.getElementById('totals').innerHTML = '';
+    document.getElementById('totalsMetrics').innerHTML = '';
+    document.getElementById('totalsBreakdown').innerHTML = '';
     document.getElementById('asof').style.display = 'none';
     document.getElementById('asof').innerHTML = '';
-    document.getElementById('bridge').style.display = 'none';
-    document.getElementById('bridge').innerHTML = '';
     document.getElementById('tableWrap').style.display = 'none';
     document.getElementById('tbody').innerHTML = '';
     document.getElementById('allclear').style.display = 'none';
