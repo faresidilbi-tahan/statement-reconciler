@@ -232,8 +232,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-balance-column-net-v2 -->
-    <button id="compareBtn" disabled data-build="2026-08-26-balance-column-net-v2">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-26-pre-range-boundary-fix -->
+    <button id="compareBtn" disabled data-build="2026-08-26-pre-range-boundary-fix">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -902,15 +902,28 @@
 
         // For the Net cross-check against the supplier's own Balance
         // column: find the balance of the last supplier row strictly
-        // before our From date, using the FULL unfiltered supplier data
-        // (only available here, before filterRowsByDate cuts it down) -
-        // that's the starting point compare.py needs to measure "how much
-        // did the balance move during our window" from the supplier's own
-        // numbers. Only meaningful when a From date is actually set.
+        // before OUR FILE's OWN actual transaction coverage starts - not
+        // the date-picker's "From" field. compare.py's out_of_our_range
+        // scoping is based on the real min/max dates found in the "ours"
+        // data (our_range), which is very often earlier than an
+        // unrelated broad date-picker setting (e.g. someone leaves From
+        // at 01/01 out of habit while the actual statement only covers
+        // 08/01 onward) - using the picker's date here picked up months
+        // of unrelated history from a supplier file with years of data,
+        // landing on completely the wrong starting balance. Compute the
+        // true boundary the same way compare.py will, using the
+        // already-available oursRows on this side.
+        var oursMinDate = null;
+        oursRows.forEach(function (r) {
+          if (r.row_type === 'transaction' && r.date && (oursMinDate === null || r.date < oursMinDate)) {
+            oursMinDate = r.date;
+          }
+        });
+
         var supplierPreRangeBalance = null;
-        if (dateFrom) {
+        if (oursMinDate) {
           var beforeRange = supplier.rows.filter(function (r) {
-            return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null && r.date < dateFrom;
+            return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null && r.date < oursMinDate;
           });
           if (beforeRange.length) {
             beforeRange.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
