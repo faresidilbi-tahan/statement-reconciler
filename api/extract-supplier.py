@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-remove-pdc-skipword"
+BUILD_TAG = "2026-08-26-db-suffix-fix"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -93,7 +93,7 @@ SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
 # rather than any one supplier's exact footer wording.
 PRINT_TIMESTAMP_RE = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\s*[AaPp][Mm]\b")
 
-AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR)?$", re.IGNORECASE)
+AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR|DB)?$", re.IGNORECASE)
 NUM_DATE_RE = re.compile(r"(\d{1,4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,4})")
 MONTH_DATE_RE = re.compile(
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*,?\s+(\d{4})",
@@ -199,9 +199,18 @@ def parse_amount_cell(raw_cell):
     if val is not None:
         return val
     parts = raw_cell.split()
-    if len(parts) > 1:
-        return parse_amount(parts[-1])
-    return None
+    # Strip a trailing standalone side-indicator suffix some suppliers
+    # print as a separate word after the amount, space-separated rather
+    # than glued directly onto the number (e.g. "51,773.91 DB" - "DB" for
+    # Debit, alongside the more common "CR"/"DR"). AMOUNT_RE only
+    # recognizes CR/DR glued onto the digits with no space, so without
+    # this the suffix word itself would be mistaken by the fallback below
+    # for "the real number" and fail to parse, silently becoming 0.
+    while parts and re.fullmatch(r"[A-Za-z]{2,3}", parts[-1]):
+        parts = parts[:-1]
+    if not parts:
+        return None
+    return parse_amount(parts[-1])
 
 
 # Per-document date convention ('DMY' or 'MDY'), detected once per parsed
