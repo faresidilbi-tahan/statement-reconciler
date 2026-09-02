@@ -39,7 +39,7 @@ def _parse_iso_date(s):
 # differently than we do for the exact same invoice (e.g. 1450.99 vs
 # 1451.00) - those are not real discrepancies worth flagging.
 AMOUNT_TOLERANCE = 1.00
-BUILD_TAG = "2026-08-26-catch-all-id-match"  # bump this string on every change; it is
+BUILD_TAG = "2026-08-26-chq-amount-match"  # bump this string on every change; it is
                              # echoed back in the API response so you can
                              # confirm in the browser Network tab which
                              # build is live
@@ -276,12 +276,73 @@ def matched_out(o, s):
     }
 
 
+def match_chq_rows(ours, supplier, ours_pool, supplier_pool):
+    """Cheque payment rows in OUR file (description contains "CHQ", value
+    sits in the debit column - a payment reducing what we owe) reference
+    an internal voucher/batch number that has nothing to do with the
+    supplier's own invoice numbering, so ID-based matching against these
+    rows is meaningless and was producing false "missing in supplier"
+    results even when the supplier genuinely had the same payment
+    recorded. Matched PURELY by amount instead - our debit against the
+    supplier's own credit (the mirrored side for a payment received) -
+    with no id requirement and no date window: if the amounts agree,
+    it's almost certainly the same payment however far apart the two
+    sides' posting dates are. Runs BEFORE every id-based step, on the
+    full pool, so a cheque row never has a chance to be wrongly
+    id-matched (or wrongly amount+date-window matched later) in the
+    first place.
+
+    A date difference between the matched pair is not ignored - it's
+    reported as a genuine date_mismatch (reusing the existing category)
+    rather than silently treated as an identical match, since the two
+    sides' posting dates ARE still worth knowing about even though they
+    don't gate whether this counts as the same payment.
+
+    When several candidates share the same amount (two cheques for an
+    identical sum, say), pairing goes by globally-closest-date-first, the
+    same tie-breaking already used for the ordinary amount+date-window
+    fallback, so the genuinely nearer pairing always wins a shared
+    candidate rather than an accident of list order."""
+    chq_indices = [i for i in ours_pool if "chq" in ours[i]["description"].lower() and ours[i]["debit"] > 0.01]
+    if not chq_indices:
+        return [], [], ours_pool, supplier_pool
+
+    candidates = []
+    for i in chq_indices:
+        o_date = _parse_iso_date(ours[i]["date"])
+        for j in supplier_pool:
+            if not amounts_close(ours[i]["debit"], supplier[j]["credit"]):
+                continue
+            s_date = _parse_iso_date(supplier[j]["date"])
+            diff_days = abs((o_date - s_date).days) if (o_date and s_date) else 10**9
+            candidates.append((diff_days, i, j))
+    candidates.sort(key=lambda c: c[0])
+
+    used_o, used_s, pairs = set(), set(), []
+    for _, i, j in candidates:
+        if i in used_o or j in used_s:
+            continue
+        pairs.append((i, j))
+        used_o.add(i)
+        used_s.add(j)
+
+    exact_pairs = [(i, j) for i, j in pairs if ours[i]["date"] == supplier[j]["date"]]
+    date_mm_pairs = [(i, j) for i, j in pairs if ours[i]["date"] != supplier[j]["date"]]
+    leftover_ours = [i for i in ours_pool if i not in used_o]
+    leftover_supplier = [j for j in supplier_pool if j not in used_s]
+    return exact_pairs, date_mm_pairs, leftover_ours, leftover_supplier
+
+
 def compare(ours_raw, supplier_raw, supplier_pre_range_balance=None):
     ours = clean(ours_raw)
     supplier = clean(supplier_raw)
 
     o_pool = list(range(len(ours)))
     s_pool = list(range(len(supplier)))
+
+    # Step 0: cheque payment rows, matched purely by amount before any
+    # id-based step gets a chance at them - see match_chq_rows for why.
+    chq_exact, chq_date_mm, o_pool, s_pool = match_chq_rows(ours, supplier, o_pool, s_pool)
 
     # Step 1: same id + same date. Split by whether the amount is within
     # tolerance (clean match) or not (a real value mismatch worth flagging).
@@ -292,9 +353,11 @@ def compare(ours_raw, supplier_raw, supplier_pre_range_balance=None):
             exact.append((i, j))
         else:
             value_mm.append((i, j))
+    exact = exact + chq_exact
 
     # Step 2: same id, amount within tolerance, date differs.
     date_mm, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "nid")
+    date_mm = date_mm + chq_date_mm
 
     # Step 3: same date, amount within tolerance, id differs.
     id_mm_candidates, o_pool, s_pool = match_exact_plus_tolerant_amount(ours, supplier, o_pool, s_pool, "date")
@@ -410,8 +473,25 @@ def compare(ours_raw, supplier_raw, supplier_pre_range_balance=None):
     our_total_credit = round(sum(r["credit"] for r in ours), 2)
     our_net_debit_credit = round(our_total_credit - our_total_debit, 2)
 
+    # ANY supplier row paired with one of ours via a category backed by
+    # real amount evidence (a clean match, or a cheque payment matched
+    # purely by amount - see match_chq_rows) is relevant to this
+    # reconciliation and must count in the totals regardless of its date.
+    # This does NOT extend to every mismatch category indiscriminately:
+    # value_mm/date_mm/id_mm pairs that came from weaker matching (in
+    # particular the final catch-all id-only step, which can span
+    # arbitrary date gaps) can occasionally be a coincidental pairing
+    # rather than the same real-world transaction - verified against real
+    # data that including those broadly made a correct total WORSE, not
+    # better, by pulling in an unrelated out-of-range row. Cheque pairs
+    # are different: they're already verified by a real amount match
+    # (our debit against the supplier's credit), so a cheque posted a
+    # few days later by the supplier is still definitely the same
+    # payment, unlike an id-only coincidence.
     matched_supplier_indices = (
-        set(j for _, j in exact) | set(j for _, j in exact_via_step3) | set(j for _, j in amt_only_pairs)
+        set(j for _, j in exact) | set(j for _, j in exact_via_step3) |
+        set(j for _, j in amt_only_pairs) |
+        set(j for _, j in chq_exact) | set(j for _, j in chq_date_mm)
     )
     supplier_in_range = [
         supplier[j] for j in range(len(supplier))
