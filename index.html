@@ -36,6 +36,26 @@
   }
   header h1 { margin: 0; font-size: 20px; font-weight: 600; text-align: center; }
   header p { margin: 4px 0 0; font-size: 13px; opacity: .85; text-align: center; }
+  .app-switcher {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    background: var(--blue-dark);
+    padding: 10px 16px;
+  }
+  .app-switcher a {
+    color: rgba(255,255,255,.72);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 20px;
+    border-radius: 20px;
+    letter-spacing: .01em;
+    transition: background .15s, color .15s;
+  }
+  .app-switcher a:hover { background: rgba(255,255,255,.14); color: #fff; }
+  .app-switcher a.active { background: #fff; color: var(--blue-dark); cursor: default; }
+  @media print { .app-switcher { display: none !important; } }
   main { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
 
   .uploads { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -213,6 +233,10 @@
 </style>
 </head>
 <body>
+<nav class="app-switcher">
+  <a href="https://statement-reconciler-pi.vercel.app/" class="active">Supplier Reconciliation</a>
+  <a href="https://bank-reconciliation-seven.vercel.app/">Bank Reconciliation</a>
+</nav>
 <header>
   <img src="https://abedtahan.com/cdn/shop/files/AT_Logo_400x200_Transparent.png?v=1732612010&width=250" />
   <h1>Statement Reconciliation</h1>
@@ -251,8 +275,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-26-remove-asof-breakdown -->
-    <button id="compareBtn" disabled data-build="2026-08-26-remove-asof-breakdown">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-27-app-switcher-nav -->
+    <button id="compareBtn" disabled data-build="2026-08-27-app-switcher-nav">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
