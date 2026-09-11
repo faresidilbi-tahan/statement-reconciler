@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-26-db-suffix-fix"
+BUILD_TAG = "2026-09-11-strip-red-watermark-chars"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -352,6 +352,30 @@ def is_continuation(cells):
 
 # ================================================================== PDF
 
+def is_watermark_char(c):
+    """Trial/demo-mode PDF exporters (Aspose, Spire, etc.) stamp a bright
+    red overlay ("TRIAL MODE - Click here for more information") directly
+    on top of the real content. When that overlay's line falls close
+    enough to a real data row, pdfplumber's table-cell text extraction
+    can merge the two lines and interleave their characters
+    character-by-character - garbling whatever real row happens to sit
+    nearby (seen for real: a row's own id and description scrambled into
+    "in9f2o1rm3a4ti" / "oSnI - 92134 - Sales Invoice"). These overlays
+    are reliably a strong, near-pure red, unlike anything in a genuine
+    financial statement, so they are stripped by color before any
+    table/word detection runs, rather than matched by their (variable)
+    wording."""
+    color = c.get("non_stroking_color")
+    if not color or len(color) < 3:
+        return False
+    r, g, b = color[0], color[1], color[2]
+    return r > 0.6 and g < 0.35 and b < 0.35
+
+
+def strip_watermark_chars(page):
+    return page.filter(lambda obj: obj.get("object_type") != "char" or not is_watermark_char(obj))
+
+
 def group_lines(page):
     words = page.extract_words(x_tolerance=1.5, y_tolerance=2.0, keep_blank_chars=False)
     words.sort(key=lambda w: (w["top"], w["x0"]))
@@ -414,7 +438,7 @@ def word_column(w, intervals):
     return None
 
 
-def parse_words_strategy(pdf):
+def parse_words_strategy(pages):
     rows, warnings = [], []
     anchors = None
     # Once a closing-balance line is seen, NOTHING after it is ever a real
@@ -426,7 +450,7 @@ def parse_words_strategy(pdf):
     # debit - a completely different table structure that happens to also
     # have dates and amounts in columns.
     seen_closing = False
-    for page_no, page in enumerate(pdf.pages, start=1):
+    for page_no, page in enumerate(pages, start=1):
         if seen_closing:
             break
         lines = group_lines(page)
@@ -544,7 +568,7 @@ def find_external_header_mapping(page, table):
     return best_map
 
 
-def parse_tables_strategy(pdf):
+def parse_tables_strategy(pages):
     rows, warnings = [], []
     found_any = False
     last_col_map, last_id_candidates, last_col_count = None, [], None
@@ -555,7 +579,7 @@ def parse_tables_strategy(pdf):
                     # boilerplate), and a date-fill-down row right at that
                     # boundary shouldn't lose its inherited date just
                     # because pdfplumber happened to see it as a new table.
-    for page in pdf.pages:
+    for page in pages:
         if seen_closing:
             break
         for table in page.find_tables():
@@ -665,18 +689,19 @@ def parse_tables_strategy(pdf):
 def parse_pdf(file_bytes):
     global _DATE_CONVENTION
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        pages = len(pdf.pages)
-        total_chars = sum(len(p.chars) for p in pdf.pages)
+        pages = [strip_watermark_chars(p) for p in pdf.pages]
+        page_count = len(pages)
+        total_chars = sum(len(p.chars) for p in pages)
         if total_chars < 20:
             raise ValueError(
                 "This PDF has no text layer (it is a scan/image). "
                 "It needs OCR before it can be parsed without an LLM."
             )
-        full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        full_text = "\n".join(p.extract_text() or "" for p in pages)
         _DATE_CONVENTION = detect_date_convention(full_text)
 
-        t_rows, t_warn, t_found = parse_tables_strategy(pdf)
-        w_rows, w_warn, w_found = parse_words_strategy(pdf)
+        t_rows, t_warn, t_found = parse_tables_strategy(pages)
+        w_rows, w_warn, w_found = parse_words_strategy(pages)
 
     # Ruled-table extraction reads each printed cell directly and is immune
     # to the column-bleed that can happen with the word-position strategy
@@ -708,7 +733,7 @@ def parse_pdf(file_bytes):
     warnings = [f"[pdf/{strategy}] {w}" for w in warnings]
     if not rows:
         warnings.append(f"[pdf/{strategy}] Header found but no data rows extracted.")
-    return rows, warnings, {"pages": pages}
+    return rows, warnings, {"pages": page_count}
 
 
 # ================================================================== XLSX
@@ -985,6 +1010,31 @@ def merge_split_vat_lines(rows):
     return merged
 
 
+def dedupe_repeated_page_break_rows(rows):
+    """Some suppliers' PDF exports reprint a page's very last data row
+    again as the first row of the next page (a pagination artifact of
+    their export software, not a second real transaction - seen for
+    real on a trial-mode export whose page break landed right after a
+    row). A genuine second transaction could never coincidentally share
+    the same date, id, description, debit, credit AND running balance
+    all at once, so two consecutive transaction rows matching on all
+    six are one printed twice - keep only the first."""
+    out = []
+    for r in rows:
+        prev = out[-1] if out else None
+        if (prev is not None
+                and r.get("row_type") == "transaction" == prev.get("row_type")
+                and r["date"] == prev["date"]
+                and r["id"] == prev["id"]
+                and r["description"] == prev["description"]
+                and r["debit"] == prev["debit"]
+                and r["credit"] == prev["credit"]
+                and r["balance"] == prev["balance"]):
+            continue
+        out.append(r)
+    return out
+
+
 def parse_supplier_file(file_bytes, filename=None):
     fmt = sniff_format(file_bytes, filename)
     if fmt == "pdf":
@@ -993,6 +1043,7 @@ def parse_supplier_file(file_bytes, filename=None):
         rows, warnings, meta = parse_xlsx(file_bytes)
     else:
         rows, warnings, meta = parse_csv(file_bytes)
+    rows = dedupe_repeated_page_break_rows(rows)
     rows = merge_split_vat_lines(rows)
     result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG, "format": fmt}
     result.update(meta)
