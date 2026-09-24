@@ -42,7 +42,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-09-11-strip-red-watermark-chars"
+BUILD_TAG = "2026-09-24-record-column-is-id"
 
 # ------------------------------------------------------------ shared vocab
 
@@ -50,7 +50,7 @@ COLUMN_KEYWORDS = {
     "date": ["date", "invc", "تاريخ", "التاريخ"],
     "id": ["ref", "reference", "invoice", "inv", "voucher", "vch", "vnum", "doc",
            "document", "no", "number", "num", "trx", "nb", "id", "check",
-           "chk", "cheque", "رقم", "سند", "مستند", "فاتورة", "المرجع", "مرجع"],
+           "chk", "cheque", "record", "رقم", "سند", "مستند", "فاتورة", "المرجع", "مرجع"],
     "description": ["description", "details", "narration", "particulars",
                     "memo", "remarks", "name", "بيان", "البيان", "التفاصيل",
                     "الوصف", "ملاحظات"],
@@ -63,7 +63,7 @@ COLUMN_KEYWORDS = {
 # used only for spreadsheet parsing, where several id columns can coexist
 # on one row (e.g. "Trans Id", "Invoice number", "Check Num" all at once)
 ID_COLUMN_PRIORITY = ["invoice", "voucher", "vch", "vnum", "check", "chk", "cheque",
-                       "doc", "document", "trx", "id",
+                       "doc", "document", "trx", "id", "record",
                        "ref", "reference",
                        "no", "number", "num", "nb"]
 
